@@ -1,0 +1,9 @@
+[package]
+name = "pcan-sys"
+version = "0.1.0"
+edition = "2021"
+description = "Low-level FFI bindings for the PEAK PCAN-Basic API"
+license = "MIT"
+
+[dependencies]
+libloading = "0.8"

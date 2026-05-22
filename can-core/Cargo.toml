@@ -1,0 +1,16 @@
+[package]
+name = "can-core"
+version = "0.1.0"
+edition = "2021"
+description = "Vendor-agnostic CAN traits, message types, and embedded-can glue used by canlib and pcan"
+license = "MIT"
+
+[features]
+default = []
+mock = []
+
+[dependencies]
+bitflags = "2"
+thiserror = "2"
+embedded-can = "0.4"
+nb = "1"
