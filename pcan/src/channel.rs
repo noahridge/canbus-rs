@@ -13,8 +13,8 @@ use pcan_sys as sys;
 use crate::bitrate::{bitrate_to_btr, PcanFdBitrate};
 use crate::bus::PcanBus;
 use crate::error::{check_status, from_pcan_status, lib};
-use crate::event::{wait_for_event, EventHandle, WaitOutcome};
-use crate::flags::{fd_dlc_to_len, fd_len_to_dlc, flags_from_pcan, flags_to_pcan};
+use crate::event::{self, wait_for_event, EventHandle, WaitOutcome};
+use crate::flags::{fd_dlc_to_len, fd_len_to_dlc, flags_to_pcan, read_flags};
 
 /// What bitrate has been configured on a [`PcanChannel`], if any.
 ///
@@ -88,9 +88,9 @@ impl PcanChannel {
         }
         self.on_bus = true;
         // Cache the receive-event handle for use by read_wait. If the
-        // backend doesn't support events (older drivers), leave it None
-        // and fall back to polling.
-        if let Some(h) = fetch_receive_event(l, self.handle) {
+        // platform/driver can't provide one, leave it None and fall back
+        // to polling.
+        if let Some(h) = event::acquire(l, self.handle) {
             self.event.set(Some(h));
         }
         Ok(())
@@ -101,9 +101,13 @@ impl PcanChannel {
             return Ok(());
         }
         let l = lib()?;
+        // Deregister and free the receive event before uninitialising, so
+        // it is released even if CAN_Uninitialize reports an error.
+        if let Some(ev) = self.event.take() {
+            event::release(l, self.handle, ev);
+        }
         check_status(unsafe { (l.CAN_Uninitialize)(self.handle) })?;
         self.on_bus = false;
-        self.event.set(None);
         Ok(())
     }
 
@@ -215,57 +219,50 @@ impl PcanChannel {
             let mut m = sys::TPCANMsgFD::default();
             let mut ts: sys::TPCANTimestampFD = 0;
             check_status(unsafe { (l.CAN_ReadFD)(self.handle, &mut m, &mut ts) })?;
+            // `fd_dlc_to_len` is bounded to 0..=64 and DATA is [u8; 64].
             let len = fd_dlc_to_len(m.DLC);
-            Ok(CanMessage::from_raw(
-                m.ID,
-                m.DATA[..len].to_vec(),
-                m.DLC,
-                flags_from_pcan(m.MSGTYPE),
-                ts,
-            ))
+            let data = m.DATA[..len].to_vec();
+            let flags = read_flags(m.MSGTYPE, &data);
+            Ok(CanMessage::from_raw(m.ID, data, m.DLC, flags, ts))
         } else {
             let mut m = sys::TPCANMsg::default();
             let mut ts = sys::TPCANTimestamp::default();
             check_status(unsafe { (l.CAN_Read)(self.handle, &mut m, &mut ts) })?;
-            let len = m.LEN as usize;
-            Ok(CanMessage::from_raw(
-                m.ID,
-                m.DATA[..len].to_vec(),
-                m.LEN,
-                flags_from_pcan(m.MSGTYPE),
-                ts.total_micros(),
-            ))
+            // Clamp to the classic-frame buffer size: TPCANMsg::DATA is
+            // [u8; 8], so a misreported LEN > 8 would otherwise panic.
+            let len = (m.LEN as usize).min(8);
+            let data = m.DATA[..len].to_vec();
+            let flags = read_flags(m.MSGTYPE, &data);
+            Ok(CanMessage::from_raw(m.ID, data, m.LEN, flags, ts.total_micros()))
         }
     }
 
     pub fn read_wait(&self, timeout: Duration) -> Result<CanMessage> {
-        // Fast path: a message is already queued.
-        match self.read() {
-            Ok(msg) => return Ok(msg),
-            Err(CanError::NoMsg) => {}
-            Err(e) => return Err(e),
-        }
-
-        // Event-driven wait, with polling fallback if no event handle.
-        if let Some(h) = self.event.get() {
-            match wait_for_event(h, timeout) {
-                WaitOutcome::Signalled => self.read(),
-                WaitOutcome::Timeout => Err(CanError::Timeout),
-                WaitOutcome::Failed => Err(CanError::Driver),
+        let deadline = std::time::Instant::now() + timeout;
+        loop {
+            // Fast path / drain: read whatever is already queued.
+            match self.read() {
+                Ok(msg) => return Ok(msg),
+                Err(CanError::NoMsg) => {}
+                Err(e) => return Err(e),
             }
-        } else {
-            let deadline = std::time::Instant::now() + timeout;
-            loop {
-                match self.read() {
-                    Ok(msg) => return Ok(msg),
-                    Err(CanError::NoMsg) => {
-                        if std::time::Instant::now() >= deadline {
-                            return Err(CanError::Timeout);
-                        }
-                        std::thread::sleep(Duration::from_millis(1));
-                    }
-                    Err(e) => return Err(e),
+
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            if remaining.is_zero() {
+                return Err(CanError::Timeout);
+            }
+
+            // Block on the receive event when available, otherwise poll. A
+            // spurious wake-up (signalled but nothing queued) just loops and
+            // re-reads until the deadline, so read_wait never returns NoMsg.
+            if let Some(h) = self.event.get() {
+                match wait_for_event(h, remaining) {
+                    WaitOutcome::Signalled => continue,
+                    WaitOutcome::Timeout => return Err(CanError::Timeout),
+                    WaitOutcome::Failed => return Err(CanError::Driver),
                 }
+            } else {
+                std::thread::sleep(Duration::from_millis(1).min(remaining));
             }
         }
     }
@@ -287,17 +284,7 @@ impl PcanChannel {
         let (from, to, extended) = match *filter {
             Filter::Range { from, to, extended } => (from, to, extended),
             Filter::CodeMask { code, mask, extended } => {
-                // Translate code/mask to a range when the masked bits form
-                // a single contiguous low-order block. PCAN can then accept
-                // it natively.
-                let inv = !mask;
-                // Check `inv` is of the form (1<<n)-1 — i.e. only the low n bits.
-                if inv & inv.wrapping_add(1) != 0 {
-                    return Err(CanError::NotImplemented);
-                }
-                let id_bits: u32 = if extended { 0x1FFF_FFFF } else { 0x7FF };
-                let from = code & mask & id_bits;
-                let to = (code | inv) & id_bits;
+                let (from, to) = codemask_to_range(code, mask, extended)?;
                 (from, to, extended)
             }
         };
@@ -359,6 +346,9 @@ impl Drop for PcanChannel {
     fn drop(&mut self) {
         if self.on_bus {
             if let Ok(l) = lib() {
+                if let Some(ev) = self.event.take() {
+                    event::release(l, self.handle, ev);
+                }
                 unsafe {
                     (l.CAN_Uninitialize)(self.handle);
                 }
@@ -367,21 +357,23 @@ impl Drop for PcanChannel {
     }
 }
 
-/// Try to fetch the platform receive-event handle for a channel.
+/// Translate a Kvaser-style code/mask filter into an inclusive PCAN range.
 ///
-/// Returns `None` if the call fails (driver doesn't support events on
-/// this device, channel not initialised, etc.).
-fn fetch_receive_event(l: &sys::PcanLib, handle: sys::TPCANHandle) -> Option<EventHandle> {
-    let mut h: EventHandle = unsafe { core::mem::zeroed() };
-    let status = unsafe {
-        (l.CAN_GetValue)(
-            handle,
-            sys::PCAN_RECEIVE_EVENT,
-            &mut h as *mut EventHandle as *mut std::os::raw::c_void,
-            core::mem::size_of::<EventHandle>() as u32,
-        )
-    };
-    if status == sys::PCAN_ERROR_OK { Some(h) } else { None }
+/// Works only when the don't-care bits (`!mask`) within the ID width form a
+/// single contiguous low-order block — otherwise the filter is not a single
+/// range and we return [`CanError::NotImplemented`]. The `& id_bits` is
+/// essential: without it the high bits of `!mask` (always set for an 11- or
+/// 29-bit filter) defeat the contiguity check and every filter is rejected.
+fn codemask_to_range(code: u32, mask: u32, extended: bool) -> Result<(u32, u32)> {
+    let id_bits: u32 = if extended { 0x1FFF_FFFF } else { 0x7FF };
+    let inv = !mask & id_bits;
+    // `inv` must be of the form (1<<n)-1 — i.e. only the low n bits.
+    if inv & inv.wrapping_add(1) != 0 {
+        return Err(CanError::NotImplemented);
+    }
+    let from = code & mask & id_bits;
+    let to = (code | inv) & id_bits;
+    Ok((from, to))
 }
 
 // Pull in id_to_raw_and_flag use to satisfy the macro-generated trait code.
@@ -411,5 +403,32 @@ mod tests {
         // Should still be set after the check.
         let cell = ch.bitrate.take();
         assert!(matches!(cell, Some(BitrateConfig::Classic(_))));
+    }
+
+    #[test]
+    fn codemask_exact_match_is_single_id_range() {
+        // Full mask = match every ID bit → from == to == code.
+        assert_eq!(codemask_to_range(0x100, 0x7FF, false), Ok((0x100, 0x100)));
+        assert_eq!(
+            codemask_to_range(0x1AB_CDEF, 0x1FFF_FFFF, true),
+            Ok((0x1AB_CDEF, 0x1AB_CDEF))
+        );
+    }
+
+    #[test]
+    fn codemask_contiguous_low_bits_form_a_range() {
+        // mask 0x7FC leaves the low 2 bits don't-care → 0x100..=0x103.
+        assert_eq!(codemask_to_range(0x100, 0x7FC, false), Ok((0x100, 0x103)));
+        // Accept-all (mask 0) → full standard ID space.
+        assert_eq!(codemask_to_range(0x000, 0x000, false), Ok((0x000, 0x7FF)));
+    }
+
+    #[test]
+    fn codemask_non_contiguous_dontcare_is_rejected() {
+        // Don't-care bits 0b101 are not a contiguous low-order block.
+        assert_eq!(
+            codemask_to_range(0x000, 0x7FA, false),
+            Err(CanError::NotImplemented)
+        );
     }
 }
