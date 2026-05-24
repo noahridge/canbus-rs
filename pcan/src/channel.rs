@@ -12,7 +12,7 @@ use pcan_sys as sys;
 
 use crate::bitrate::{bitrate_to_btr, PcanFdBitrate};
 use crate::bus::PcanBus;
-use crate::error::{check_status, from_pcan_status, lib};
+use crate::error::{check_status, lib};
 use crate::event::{self, wait_for_event, EventHandle, WaitOutcome};
 use crate::flags::{fd_dlc_to_len, fd_len_to_dlc, flags_to_pcan, read_flags};
 
@@ -87,12 +87,7 @@ impl PcanChannel {
             None => return Err(CanError::Param),
         }
         self.on_bus = true;
-        // Cache the receive-event handle for use by read_wait. If the
-        // platform/driver can't provide one, leave it None and fall back
-        // to polling.
-        if let Some(h) = event::acquire(l, self.handle) {
-            self.event.set(Some(h));
-        }
+        self.acquire_event(l);
         Ok(())
     }
 
@@ -103,12 +98,26 @@ impl PcanChannel {
         let l = lib()?;
         // Deregister and free the receive event before uninitialising, so
         // it is released even if CAN_Uninitialize reports an error.
-        if let Some(ev) = self.event.take() {
-            event::release(l, self.handle, ev);
-        }
+        self.release_event(l);
         check_status(unsafe { (l.CAN_Uninitialize)(self.handle) })?;
         self.on_bus = false;
         Ok(())
+    }
+
+    /// Cache the receive-event handle for use by `read_wait`. If the
+    /// platform/driver can't provide one, leaves `self.event` as `None`
+    /// so the caller falls back to polling.
+    fn acquire_event(&self, l: &sys::PcanLib) {
+        if let Some(h) = event::acquire(l, self.handle) {
+            self.event.set(Some(h));
+        }
+    }
+
+    /// Deregister and free any cached receive-event handle.
+    fn release_event(&self, l: &sys::PcanLib) {
+        if let Some(ev) = self.event.take() {
+            event::release(l, self.handle, ev);
+        }
     }
 
     pub fn reset_bus(&mut self) -> Result<()> {
@@ -123,10 +132,15 @@ impl PcanChannel {
     pub fn set_bitrate(&self, bitrate: Bitrate) -> Result<()> {
         let btr = bitrate_to_btr(bitrate)?;
         if self.on_bus {
-            // Re-initialise with new bitrate.
+            // Re-initialise with new bitrate. CAN_Uninitialize tears down the
+            // driver-side channel state, including any registered receive
+            // event — release ours first, then re-acquire against the fresh
+            // channel so read_wait keeps getting notifications.
             let l = lib()?;
+            self.release_event(l);
             check_status(unsafe { (l.CAN_Uninitialize)(self.handle) })?;
             check_status(unsafe { (l.CAN_Initialize)(self.handle, btr, 0, 0, 0) })?;
+            self.acquire_event(l);
         }
         self.bitrate.set(Some(BitrateConfig::Classic(btr)));
         Ok(())
@@ -144,10 +158,13 @@ impl PcanChannel {
     /// the next time [`Self::bus_on`] is called.
     pub fn set_fd_bitrate(&self, bitrate: PcanFdBitrate) -> Result<()> {
         if self.on_bus {
+            // See set_bitrate for why the receive event is cycled here.
             let l = lib()?;
+            self.release_event(l);
             check_status(unsafe { (l.CAN_Uninitialize)(self.handle) })?;
             let ptr = bitrate.0.as_ptr() as *mut std::os::raw::c_char;
             check_status(unsafe { (l.CAN_InitializeFD)(self.handle, ptr) })?;
+            self.acquire_event(l);
         }
         self.bitrate.set(Some(BitrateConfig::Fd(bitrate)));
         Ok(())
@@ -295,23 +312,7 @@ impl PcanChannel {
     pub fn read_status(&self) -> Result<BusStatus> {
         let l = lib()?;
         let raw = unsafe { (l.CAN_GetStatus)(self.handle) };
-        // PCAN_ERROR_OK means error-active; other bus bits map directly.
-        let mut out = BusStatus::empty();
-        if raw == sys::PCAN_ERROR_OK {
-            return Ok(BusStatus::ERROR_ACTIVE);
-        }
-        if raw & sys::PCAN_ERROR_BUSOFF != 0 { out |= BusStatus::BUS_OFF; }
-        if raw & sys::PCAN_ERROR_BUSPASSIVE != 0 { out |= BusStatus::ERROR_PASSIVE; }
-        if raw & sys::PCAN_ERROR_BUSWARNING != 0 { out |= BusStatus::ERROR_WARNING; }
-        if raw & (sys::PCAN_ERROR_OVERRUN | sys::PCAN_ERROR_QOVERRUN) != 0 {
-            out |= BusStatus::OVERRUN;
-        }
-        if out.is_empty() {
-            // Some other status — propagate as a backend error rather than
-            // pretending the bus is in any particular state.
-            return Err(from_pcan_status(raw));
-        }
-        Ok(out)
+        Ok(pcan_status_to_bus_status(raw))
     }
 
     pub fn read_error_counters(&self) -> Result<ErrorCounters> {
@@ -319,16 +320,24 @@ impl PcanChannel {
         Err(CanError::NotImplemented)
     }
 
+    /// Flush the receive queue.
+    ///
+    /// PCAN-Basic only exposes `CAN_Reset`, which clears **both** queues, so
+    /// this call also discards anything pending in the transmit queue. There
+    /// is no rx-only flush primitive in PCAN-Basic.
     pub fn flush_rx(&self) -> Result<()> {
-        // CAN_Reset clears both queues — we expose it as flush_rx and
-        // accept that flush_tx will also flush rx as a consequence.
         let l = lib()?;
         check_status(unsafe { (l.CAN_Reset)(self.handle) })
     }
 
+    /// Flush the transmit queue — not supported by PCAN-Basic.
+    ///
+    /// PCAN's only flush primitive (`CAN_Reset`) clears both queues, so a
+    /// tx-only flush would silently drop received frames. Returning
+    /// [`CanError::NotImplemented`] forces the caller to opt in by calling
+    /// [`Self::flush_rx`] explicitly when they want to clear both queues.
     pub fn flush_tx(&self) -> Result<()> {
-        let l = lib()?;
-        check_status(unsafe { (l.CAN_Reset)(self.handle) })
+        Err(CanError::NotImplemented)
     }
 
     /// Request bus statistics — not supported by PCAN-Basic.
@@ -346,14 +355,36 @@ impl Drop for PcanChannel {
     fn drop(&mut self) {
         if self.on_bus {
             if let Ok(l) = lib() {
-                if let Some(ev) = self.event.take() {
-                    event::release(l, self.handle, ev);
-                }
+                self.release_event(l);
                 unsafe {
                     (l.CAN_Uninitialize)(self.handle);
                 }
             }
         }
+    }
+}
+
+/// Translate a `TPCANStatus` from `CAN_GetStatus` into a [`BusStatus`].
+///
+/// `CAN_GetStatus` is documented as reporting only bus-state conditions, so
+/// `PCAN_ERROR_OK` and any value with no recognised bus-state bit both map
+/// to `ERROR_ACTIVE`. Extras like `PCAN_ERROR_QRCVEMPTY` are not bus errors
+/// and must not surface from this call as `CanError::NoMsg`.
+fn pcan_status_to_bus_status(raw: sys::TPCANStatus) -> BusStatus {
+    if raw == sys::PCAN_ERROR_OK {
+        return BusStatus::ERROR_ACTIVE;
+    }
+    let mut out = BusStatus::empty();
+    if raw & sys::PCAN_ERROR_BUSOFF != 0 { out |= BusStatus::BUS_OFF; }
+    if raw & sys::PCAN_ERROR_BUSPASSIVE != 0 { out |= BusStatus::ERROR_PASSIVE; }
+    if raw & sys::PCAN_ERROR_BUSWARNING != 0 { out |= BusStatus::ERROR_WARNING; }
+    if raw & (sys::PCAN_ERROR_OVERRUN | sys::PCAN_ERROR_QOVERRUN) != 0 {
+        out |= BusStatus::OVERRUN;
+    }
+    if out.is_empty() {
+        BusStatus::ERROR_ACTIVE
+    } else {
+        out
     }
 }
 
@@ -430,5 +461,38 @@ mod tests {
             codemask_to_range(0x000, 0x7FA, false),
             Err(CanError::NotImplemented)
         );
+    }
+
+    #[test]
+    fn read_status_ok_is_error_active() {
+        assert_eq!(
+            pcan_status_to_bus_status(sys::PCAN_ERROR_OK),
+            BusStatus::ERROR_ACTIVE
+        );
+    }
+
+    #[test]
+    fn read_status_non_bus_bits_default_to_error_active() {
+        // QRCVEMPTY isn't a bus state — it must not surface as an error
+        // from a "what's the bus state?" query.
+        assert_eq!(
+            pcan_status_to_bus_status(sys::PCAN_ERROR_QRCVEMPTY),
+            BusStatus::ERROR_ACTIVE
+        );
+    }
+
+    #[test]
+    fn read_status_recognises_bus_state_bits() {
+        assert!(pcan_status_to_bus_status(sys::PCAN_ERROR_BUSOFF).contains(BusStatus::BUS_OFF));
+        assert!(pcan_status_to_bus_status(sys::PCAN_ERROR_BUSPASSIVE)
+            .contains(BusStatus::ERROR_PASSIVE));
+        assert!(pcan_status_to_bus_status(sys::PCAN_ERROR_BUSWARNING)
+            .contains(BusStatus::ERROR_WARNING));
+    }
+
+    #[test]
+    fn read_status_overrun_from_either_queue_bit() {
+        assert!(pcan_status_to_bus_status(sys::PCAN_ERROR_OVERRUN).contains(BusStatus::OVERRUN));
+        assert!(pcan_status_to_bus_status(sys::PCAN_ERROR_QOVERRUN).contains(BusStatus::OVERRUN));
     }
 }

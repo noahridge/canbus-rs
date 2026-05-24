@@ -103,8 +103,16 @@ mod windows_impl {
         }
     }
 
+    /// Win32's `INFINITE` sentinel — passing this as the timeout makes
+    /// `WaitForSingleObject` block forever, which is not what callers asking
+    /// for a finite (if very large) `Duration` want.
+    const INFINITE: u32 = u32::MAX;
+
     pub(super) fn wait(handle: EventHandle, timeout: Duration) -> WaitOutcome {
-        let ms = timeout.as_millis().min(u32::MAX as u128) as u32;
+        // Clamp below INFINITE so a saturating Duration doesn't accidentally
+        // turn this into an infinite wait. The Linux poll() path uses
+        // i32::MAX ms as its cap, so this keeps both platforms finite.
+        let ms = timeout.as_millis().min((INFINITE - 1) as u128) as u32;
         // SAFETY: `handle` is an event we created and registered; it stays
         // valid until `release` is called.
         let r = unsafe { WaitForSingleObject(handle, ms) };
