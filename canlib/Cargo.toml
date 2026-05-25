@@ -1,20 +1,21 @@
 [package]
 name = "canlib"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
 description = "Safe, idiomatic Rust wrapper for Kvaser CANLib"
-license = "MIT"
 
 [features]
 virtual-tests = []
 
 [dependencies]
-canlib-sys = { path = "../canlib-sys" }
-can-core = { path = "../can-core" }
-bitflags = "2"
-thiserror = "2"
-embedded-can = "0.4"
-nb = "1"
+canlib-sys = { path = "../canlib-sys", version = "0.1" }
+can-core = { path = "../can-core", version = "0.1" }
+bitflags.workspace = true
+thiserror.workspace = true
+embedded-can.workspace = true
+nb.workspace = true
 
 [dev-dependencies]
 can-core = { path = "../can-core", features = ["mock"] }

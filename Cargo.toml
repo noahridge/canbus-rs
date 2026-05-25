@@ -1,3 +1,16 @@
 [workspace]
 members = ["can-core", "canlib-sys", "canlib", "pcan-sys", "pcan"]
 resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/noahridge/canlib-rs"
+
+[workspace.dependencies]
+bitflags = "2"
+thiserror = "2"
+embedded-can = "0.4"
+libloading = "0.8"
+nb = "1"

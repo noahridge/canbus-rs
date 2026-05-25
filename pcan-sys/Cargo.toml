@@ -1,9 +1,10 @@
 [package]
 name = "pcan-sys"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
 description = "Low-level FFI bindings for the PEAK PCAN-Basic API"
-license = "MIT"
 
 [dependencies]
-libloading = "0.8"
+libloading.workspace = true
