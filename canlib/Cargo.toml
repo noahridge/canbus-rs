@@ -11,10 +11,14 @@ virtual-tests = []
 
 [dependencies]
 canlib-sys = { path = "../canlib-sys", version = "0.1" }
+can-core = { path = "../can-core", version = "0.1" }
 bitflags.workspace = true
 thiserror.workspace = true
 embedded-can.workspace = true
 nb.workspace = true
+
+[dev-dependencies]
+can-core = { path = "../can-core", features = ["mock"] }
 
 [[example]]
 name = "virtual_loopback"

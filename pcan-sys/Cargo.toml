@@ -1,0 +1,10 @@
+[package]
+name = "pcan-sys"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Low-level FFI bindings for the PEAK PCAN-Basic API"
+
+[dependencies]
+libloading.workspace = true

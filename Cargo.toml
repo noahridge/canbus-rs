@@ -1,5 +1,5 @@
 [workspace]
-members = ["canlib-sys", "canlib"]
+members = ["can-core", "canlib-sys", "canlib", "pcan-sys", "pcan"]
 resolver = "2"
 
 [workspace.package]
