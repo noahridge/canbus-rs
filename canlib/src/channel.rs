@@ -301,6 +301,9 @@ impl Channel {
         ))
     }
 
+    /// Blocking read with a timeout. Returns [`CanError::Timeout`] if the
+    /// deadline expires with no message, matching the pcan backend so
+    /// vendor-agnostic code can match a single error variant.
     pub fn read_wait(&self, timeout: Duration) -> Result<CanMessage> {
         let l = lib()?;
         let mut id: std::os::raw::c_long = 0;
@@ -309,7 +312,7 @@ impl Channel {
         let mut flags: u32 = 0;
         let mut timestamp: std::os::raw::c_ulong = 0;
 
-        check_status(unsafe {
+        let status = unsafe {
             (l.canReadWait)(
                 self.inner.raw(),
                 &mut id,
@@ -319,7 +322,16 @@ impl Channel {
                 &mut timestamp,
                 timeout.as_millis() as std::os::raw::c_ulong,
             )
-        })?;
+        };
+        // canReadWait surfaces canERR_NOMSG when the timeout expires with
+        // no data. Map it to CanError::Timeout so read_wait matches the
+        // pcan backend's contract; NoMsg stays reserved for the
+        // non-blocking read() path.
+        match check_status(status) {
+            Ok(()) => {}
+            Err(CanError::NoMsg) => return Err(CanError::Timeout),
+            Err(e) => return Err(e),
+        }
 
         let data_len = (dlc as usize).min(CANFD_MAX_DLC);
         Ok(CanMessage::from_raw(
