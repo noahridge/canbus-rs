@@ -1,0 +1,17 @@
+[package]
+name = "canbus-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Vendor-neutral CAN bus types and traits shared by the canbus backends"
+
+[features]
+default = []
+mock = []
+
+[dependencies]
+bitflags.workspace = true
+thiserror.workspace = true
+embedded-can.workspace = true
+nb.workspace = true

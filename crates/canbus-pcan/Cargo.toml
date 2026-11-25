@@ -1,0 +1,18 @@
+[package]
+name = "canbus-pcan"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "PEAK PCAN-Basic backend for the canbus crate family"
+
+[dependencies]
+canbus-core.workspace = true
+bitflags.workspace = true
+thiserror.workspace = true
+embedded-can.workspace = true
+libloading.workspace = true
+nb.workspace = true
+
+[dev-dependencies]
+canbus-core = { workspace = true, features = ["mock"] }
