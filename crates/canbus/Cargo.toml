@@ -1,0 +1,25 @@
+[package]
+name = "canbus"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Cross-platform CAN bus library with runtime-selectable backends (Kvaser, PEAK PCAN, virtual)"
+
+[features]
+default = ["kvaser", "pcan", "virtual"]
+kvaser = ["dep:canbus-kvaser"]
+pcan = ["dep:canbus-pcan"]
+virtual = ["dep:canbus-virtual"]
+
+[dependencies]
+canbus-core.workspace = true
+canbus-kvaser = { workspace = true, optional = true }
+canbus-pcan = { workspace = true, optional = true }
+canbus-virtual = { workspace = true, optional = true }
+embedded-can.workspace = true
+nb.workspace = true
+
+[[example]]
+name = "virtual_loopback"
+required-features = ["virtual"]

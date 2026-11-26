@@ -1,139 +1,47 @@
-//! Safe, idiomatic Rust wrapper for the PEAK PCAN-Basic API.
+//! PEAK PCAN-Basic backend for the [`canbus`](https://docs.rs/canbus) crate
+//! family.
 //!
-//! Implements the shared [`CanChannel`] trait set so
-//! application code can be written once and run against Kvaser or PEAK
-//! hardware. PCAN's lifecycle differs from Kvaser's — see [`PcanChannel`]
-//! for details.
+//! Applications normally use this through `canbus::Bus` with interface name
+//! `"pcan"`; depend on this crate directly only to skip the facade.
 //!
-//! # Getting started
+//! PCAN-Basic (`PCANBasic.dll` on Windows, `libpcanbasic.so` on Linux) is
+//! loaded at runtime the first time a bus is opened. Set `PCAN_SDK_DIR` to
+//! load it from a non-standard location. On platforms PEAK doesn't support,
+//! opening fails with
+//! [`Error::LibraryNotLoaded`](canbus_core::Error::LibraryNotLoaded).
 //!
-//! ```no_run
-//! use canbus_pcan::{Bitrate, CanMessage, PcanBus, PcanChannel, StandardId};
-//! use std::time::Duration;
+//! # Configuration
 //!
-//! let mut ch = PcanChannel::open(PcanBus::Usb(1)).unwrap();
-//! ch.set_bitrate(Bitrate::Rate500K).unwrap();
-//! ch.bus_on().unwrap();
+//! - **Channel:** a PCAN-Basic channel name — `PCAN_USBBUS1`..`16`,
+//!   `PCAN_PCIBUS1`..`16`, `PCAN_LANBUS1`..`16` (case-insensitive) — or a
+//!   raw handle such as `0x51`. Use [`detect`] to list channels.
+//! - **Bitrate (required):** classic CAN uses PCAN's presets (1M, 800k, 500k,
+//!   250k, 125k, 100k, 95k, 83k, 50k, 47k, 33k, 20k, 10k, 5k). Explicit
+//!   [`Timing`](canbus_core::Timing) must use the 8 MHz SJA1000 clock.
+//! - **CAN FD:** nominal 125k/250k/500k/1M and data 500k/1M/2M/4M/8M have
+//!   80 MHz presets; otherwise give explicit nominal and data timing with the
+//!   same clock.
+//! - **Listen-only:** sets `PCAN_LISTEN_ONLY` before initialisation.
 //!
-//! let id = StandardId::new(0x123).unwrap();
-//! let msg = CanMessage::new(id, &[0xDE, 0xAD, 0xBE, 0xEF]).unwrap();
-//! ch.write(&msg).unwrap();
-//!
-//! match ch.read_wait(Duration::from_secs(1)) {
-//!     Ok(rx) => println!("Received: id=0x{:X} data={:?}", rx.id(), rx.data()),
-//!     Err(canbus_pcan::CanError::Timeout) => println!("No message received"),
-//!     Err(e) => eprintln!("Error: {}", e),
-//! }
-//! ```
+//! Timestamps have microsecond resolution, counted from when the driver
+//! started. `flush_tx` is not supported: PCAN-Basic's only flush also
+//! discards received frames.
 
-pub mod bitrate;
-pub mod bus;
-pub mod channel;
-pub mod error;
+mod bus;
+mod channel_name;
+mod convert;
 mod event;
 mod ffi;
-pub mod flags;
 
-// Re-export everything from canbus-core so users only need the `canbus-pcan`
-// dependency to get the unified API surface.
-pub use canbus_core::{
-    blocking_receive, blocking_transmit, decode_error_frame, nb_receive, nb_transmit, Bitrate, Brs,
-    BusError, BusErrorKind, BusParams, BusParamsTq, BusStatistics, BusStatus, CanBusControl,
-    CanChannel, CanDiagnostics, CanError, CanMessage, CanRead, CanWrite, DataFrame, DriverType,
-    EmbeddedCanError, ErrorCounters, ErrorFrame, ExtendedId, FdBitrate, Filter, Frame, Id,
-    MessageFlags, RemoteFrame, Result, StandardId, CANFD_MAX_DLC, CAN_EXT_ID_MAX, CAN_MAX_DLC,
-    CAN_STD_ID_MAX,
-};
+use canbus_core::{BusConfig, CanBus, Interface, Result};
 
-pub use canbus_core::embedded_can;
+pub use bus::{detect, PcanBus};
 
-pub use bitrate::PcanFdBitrate;
-pub use bus::PcanBus;
-pub use channel::PcanChannel;
-pub use error::{check_status, from_pcan_status};
+pub(crate) const NAME: &str = "pcan";
 
-use crate::ffi as sys;
+/// Descriptor for the PCAN backend.
+pub const INTERFACE: Interface = Interface::new(NAME, "PEAK PCAN-Basic", open, detect);
 
-/// Information about an attached PCAN channel.
-#[derive(Debug, Clone)]
-pub struct ChannelInfo {
-    /// Raw PCAN channel handle (`PCAN_USBBUS1` etc.).
-    pub channel_handle: u16,
-    /// Device kind (`PCAN_USB`, `PCAN_PCI`, `PCAN_LAN`, …).
-    pub device_type: u8,
-    /// Hardware CAN-controller number on the device.
-    pub controller_number: u8,
-    /// Bitmap of `FEATURE_*` flags.
-    pub features: u32,
-    /// Hardware name (e.g. `"PCAN-USB"`).
-    pub device_name: String,
-    /// Device serial / id.
-    pub device_id: u32,
-    /// Channel condition (available, occupied, …).
-    pub condition: u32,
-}
-
-/// Enumerate all PCAN channels attached to the system.
-///
-/// Returns an empty vector if the driver reports no channels. The list
-/// includes both available and occupied channels.
-pub fn enumerate_channels() -> Result<Vec<ChannelInfo>> {
-    let l = error::lib()?;
-    let mut count: u32 = 0;
-    check_status(unsafe {
-        (l.CAN_GetValue)(
-            sys::PCAN_NONEBUS,
-            sys::PCAN_ATTACHED_CHANNELS_COUNT,
-            &mut count as *mut u32 as *mut std::os::raw::c_void,
-            core::mem::size_of::<u32>() as u32,
-        )
-    })?;
-    if count == 0 {
-        return Ok(Vec::new());
-    }
-    let mut raw = vec![sys::TPCANChannelInformation::default(); count as usize];
-    let byte_len = count as usize * core::mem::size_of::<sys::TPCANChannelInformation>();
-    check_status(unsafe {
-        (l.CAN_GetValue)(
-            sys::PCAN_NONEBUS,
-            sys::PCAN_ATTACHED_CHANNELS,
-            raw.as_mut_ptr() as *mut std::os::raw::c_void,
-            byte_len as u32,
-        )
-    })?;
-    Ok(raw
-        .into_iter()
-        .map(|info| {
-            let name_len = info
-                .device_name
-                .iter()
-                .position(|&b| b == 0)
-                .unwrap_or(info.device_name.len());
-            ChannelInfo {
-                channel_handle: info.channel_handle,
-                device_type: info.device_type,
-                controller_number: info.controller_number,
-                features: info.device_features,
-                device_name: String::from_utf8_lossy(&info.device_name[..name_len]).into_owned(),
-                device_id: info.device_id,
-                condition: info.channel_condition,
-            }
-        })
-        .collect())
-}
-
-/// Get the loaded PCAN-Basic API version as a string.
-pub fn get_api_version() -> Result<String> {
-    let l = error::lib()?;
-    let mut buf = [0u8; sys::MAX_LENGTH_VERSION_STRING];
-    check_status(unsafe {
-        (l.CAN_GetValue)(
-            sys::PCAN_NONEBUS,
-            sys::PCAN_API_VERSION,
-            buf.as_mut_ptr() as *mut std::os::raw::c_void,
-            buf.len() as u32,
-        )
-    })?;
-    let len = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
-    Ok(String::from_utf8_lossy(&buf[..len]).into_owned())
+fn open(config: &BusConfig) -> Result<Box<dyn CanBus>> {
+    Ok(Box::new(PcanBus::open(config)?))
 }

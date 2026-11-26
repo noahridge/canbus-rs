@@ -1,442 +1,271 @@
-# canlib-rs User Guide
+# canbus User Guide
 
-A safe, idiomatic Rust wrapper for the [Kvaser CANLib SDK](https://kvaser.com/developer/canlib-sdk/), providing access to Kvaser CAN hardware for sending and receiving CAN and CAN FD messages.
+## Contents
 
-## Prerequisites
+1. [Opening a bus](#opening-a-bus)
+2. [Configuration](#configuration)
+3. [Frames](#frames)
+4. [Sending and receiving](#sending-and-receiving)
+5. [Filters](#filters)
+6. [Status and capabilities](#status-and-capabilities)
+7. [Errors](#errors)
+8. [Threads](#threads)
+9. [Backend reference](#backend-reference)
+10. [embedded-can](#embedded-can)
+11. [Writing a backend](#writing-a-backend)
+12. [Migrating from the `canlib` / `pcan` crates](#migrating-from-the-canlib--pcan-crates)
 
-- **Rust** 1.70+ (2021 edition)
-- **Kvaser CANLib SDK** installed:
-  - **Windows**: Download from [kvaser.com](https://kvaser.com/developer/canlib-sdk/) and run the installer
-  - **Linux**: Install the [linuxcan](https://www.kvaser.com/linux-drivers-and-sdk-2/) package
-- **Kvaser hardware** or the **Kvaser Virtual CAN Driver** (installed automatically with the SDK on Windows)
+## Opening a bus
 
-### Optional
-
-- **LLVM/Clang**: If installed, `bindgen` will auto-generate FFI bindings from the SDK headers. Without it, the crate uses pre-written manual declarations — this is fully functional.
-
-### SDK Path Configuration
-
-The build script auto-detects the SDK at standard install locations. If your SDK is installed elsewhere, set the environment variable:
-
-```sh
-set CANLIB_SDK_DIR=C:\path\to\your\Kvaser\Canlib
-```
-
-## Installation
-
-Add to your `Cargo.toml`:
-
-```toml
-[dependencies]
-canlib = { path = "path/to/canlib-rs/canlib" }
-```
-
-## Quick Start
+Every bus is described by a `BusConfig`: an **interface** (backend) name, a
+**channel** in that backend's format, and settings.
 
 ```rust
-use canlib::{Bitrate, CanMessage, Channel, OpenFlags};
+use canbus::{Bus, BusConfig};
+
+let bus = Bus::open(&BusConfig::new("kvaser", "0").bitrate(500_000))?;
+let bus = Bus::open(&BusConfig::new("pcan", "PCAN_USBBUS1").bitrate(500_000))?;
+let bus = Bus::open(&BusConfig::new("virtual", "vcan0"))?;
+# Ok::<(), canbus::Error>(())
+```
+
+Other ways to open:
+
+- `Bus::from_env()` — reads `CAN_INTERFACE`, `CAN_CHANNEL`, `CAN_BITRATE`,
+  `CAN_DATA_BITRATE`, `CAN_FD`, `CAN_LISTEN_ONLY` (the python-can names).
+  `canbus::config_from_lookup` does the same from any key/value source.
+- `Bus::open_with(&some_crate::INTERFACE, &config)` — a backend that isn't
+  compiled into `canbus`.
+- `Bus::from_backend("name", backend_bus)` — wrap a backend bus you opened
+  directly.
+
+Discover what's available:
+
+```rust
+for interface in canbus::interfaces() {
+    println!("{}: {}", interface.name, interface.description);
+}
+for ch in canbus::detect_available() {
+    let bus = canbus::Bus::open(&ch.config().bitrate(500_000))?;
+    # let _ = bus;
+}
+# Ok::<(), canbus::Error>(())
+```
+
+A bus is on-bus as soon as it's open. It goes off-bus on `shutdown()` or
+when dropped.
+
+## Configuration
+
+```rust
+use canbus::{BusConfig, Timing};
+
+let cfg = BusConfig::new("pcan", "PCAN_USBBUS1")
+    .bitrate(500_000)          // nominal bitrate, bit/s
+    .fd(2_000_000)             // enable CAN FD with this data bitrate
+    .listen_only(false)        // silent mode: no TX, no ACKs
+    .option("key", "value");   // backend-specific options (see below)
+
+// Explicit timing instead of a preset (tseg1 includes the propagation segment):
+let cfg = BusConfig::new("kvaser", "0").timing(Timing {
+    clock_hz: 80_000_000, brp: 10, tseg1: 12, tseg2: 3, sjw: 1,
+});
+```
+
+Standard bitrates map to each vendor's presets. Rates without a preset either
+let the driver derive timing (Kvaser) or return `Error::InvalidConfig`
+explaining what to set instead.
+
+## Frames
+
+`CanMessage` is an enum of `Data`, `Remote` and `Error` frames.
+
+```rust
+use canbus::{Brs, CanMessage, ExtendedId, StandardId};
+
+let classic = CanMessage::new(StandardId::new(0x123).unwrap(), &[1, 2, 3])?;
+let fd = CanMessage::new_fd(ExtendedId::new(0x18DA_F110).unwrap(), &[0; 20], Brs::On)?;
+let rtr = CanMessage::new_remote(StandardId::new(0x7DF).unwrap(), 8)?;
+
+assert_eq!(fd.len(), 24);   // payload bytes (padded up to a valid FD length)
+assert_eq!(fd.dlc(), 12);   // the 4-bit DLC code
+# Ok::<(), canbus::Error>(())
+```
+
+- `id()` is the raw identifier; `typed_id()` returns an `embedded_can::Id`.
+- `len()` is always bytes and `dlc()` always the DLC code, on every backend.
+- `timestamp()` is set on received frames as a `Duration` from a
+  backend-defined epoch; compare timestamps from the same bus.
+- `is_echo()` marks a frame this bus transmitted, when echoes are enabled.
+
+## Sending and receiving
+
+Timeouts follow one rule everywhere: `None` waits forever,
+`Some(Duration::ZERO)` never blocks, `Some(d)` waits up to `d`.
+
+```rust
 use std::time::Duration;
+use canbus::CanBus;
+# fn demo(bus: &mut canbus::Bus, msg: &canbus::CanMessage) -> canbus::Result<()> {
+bus.send(msg, Some(Duration::from_millis(100)))?;   // waits for TX-queue space
 
-fn main() -> canlib::Result<()> {
-    // Open channel 0 (use ACCEPT_VIRTUAL for virtual channels)
-    let mut ch = Channel::open(0, OpenFlags::ACCEPT_VIRTUAL)?;
-    ch.set_bitrate(Bitrate::Rate500K)?;
-    ch.bus_on()?;
-
-    // Send a message
-    let id = canlib::StandardId::new(0x123).unwrap();
-    let msg = CanMessage::new(id, &[0xDE, 0xAD, 0xBE, 0xEF])?;
-    ch.write(&msg)?;
-
-    // Receive a message (2 second timeout)
-    let received = ch.read_wait(Duration::from_secs(2))?;
-    println!("Got: id=0x{:X} data={:02X?}", received.id(), received.data());
-
-    Ok(())
-    // Channel automatically goes off-bus and closes when dropped
+match bus.recv(Some(Duration::from_secs(1)))? {
+    Some(frame) if frame.is_error_frame() => eprintln!("bus error: {:?}", frame.flags()),
+    Some(frame) => println!("{:X}: {:02X?}", frame.id(), frame.data()),
+    None => println!("timeout"),
 }
+# Ok(()) }
 ```
 
-## API Reference
+`send` returns `Error::TxQueueFull` (zero timeout) or `Error::Timeout` when
+the transmit queue stays full. `recv` returns error frames as frames, not as
+`Err`.
 
-### Library Functions
-
-These free functions are available at the crate root.
+## Filters
 
 ```rust
-// Get CANLib version as (major, minor)
-let (major, minor) = canlib::get_version();
-
-// Get the number of available CAN channels
-let count = canlib::get_number_of_channels()?;
-
-// Enumerate all channels with metadata
-let channels = canlib::enumerate_channels()?;
-for ch in &channels {
-    println!("[{}] {} - {} (serial: {})",
-        ch.index, ch.name, ch.device_description, ch.serial_number);
-}
+use canbus::{CanBus, Filter};
+# fn demo(bus: &mut canbus::Bus) -> canbus::Result<()> {
+bus.set_filters(&[
+    Filter::standard(0x7E8),
+    Filter::Range { from: 0x100, to: 0x1FF, extended: false },
+    Filter::CodeMask { code: 0x18DA_F100, mask: 0x1FFF_FF00, extended: true },
+])?;
+bus.set_filters(&[])?; // accept everything again
+# Ok(()) }
 ```
 
-### Opening a Channel
+A frame passes if **any** filter matches; error frames always pass. Backends
+apply what their hardware can and report `FilterSupport::Software` when it
+isn't exact; `Bus` then filters the rest in software, so results are
+identical on every backend.
+
+## Status and capabilities
 
 ```rust
-use canlib::{Channel, OpenFlags};
+use canbus::{BusState, CanBus};
+# fn demo(bus: &canbus::Bus) -> canbus::Result<()> {
+let status = bus.status()?;
+if status.state == BusState::BusOff { /* … */ }
+if let Some(c) = status.error_counters { println!("TEC {} REC {}", c.tx, c.rx); }
 
-// Basic open
-let mut ch = Channel::open(0, OpenFlags::empty())?;
-
-// With flags (combinable with |)
-let mut ch = Channel::open(0,
-    OpenFlags::ACCEPT_VIRTUAL | OpenFlags::REQUIRE_INIT_ACCESS
-)?;
+let caps = bus.capabilities();
+println!("FD: {}, hardware filters: {}", caps.fd, caps.hardware_filters);
+# Ok(()) }
 ```
 
-**Available flags:**
+## Errors
 
-| Flag | Description |
+All calls return `canbus::Result<T>` with a vendor-neutral `canbus::Error`.
+Common variants: `LibraryNotLoaded`, `UnknownInterface`, `ChannelNotFound`,
+`ChannelInUse`, `InvalidConfig`, `InvalidFrame`, `Unsupported`, `Timeout`,
+`TxQueueFull`, `BusOff`, `Shutdown`. Anything else is
+`Error::Backend { interface, code, message }` with the vendor's own code and
+message text.
+
+## Threads
+
+Every bus is `Send` but not `Sync`: you can move a bus to another thread,
+but not use one bus from two threads at once. This matches vendor rules
+(Kvaser forbids concurrent calls on one handle). To send and receive from
+different threads, open two buses on the same channel — on hardware, each
+bus has its own handle.
+
+```rust
+let rx_bus = canbus::Bus::open(&canbus::BusConfig::new("virtual", "vcan0"))?;
+let reader = std::thread::spawn(move || {
+    let mut bus = rx_bus;
+    // … bus.recv(…) …
+    # let _ = &mut bus;
+});
+# reader.join().unwrap();
+# Ok::<(), canbus::Error>(())
+```
+
+## Backend reference
+
+### `kvaser`
+
+- **Channel:** CANlib channel index (`"0"`, `"1"`, …).
+- **Bitrates:** presets for 1M, 500k, 250k, 125k, 100k, 83.3k, 62.5k, 50k,
+  10k; other rates are derived by CANlib. FD data presets: 500k, 1M, 2M, 4M,
+  8M (80 % sample point).
+- **Options:** `accept_virtual` (default `true`), `exclusive` (`false`),
+  `fd_non_iso` (`false`).
+- **Timestamps:** 10 µs resolution where supported, else 1 ms.
+- **Library:** `canlib32.dll` / `libcanlib.so`; override with `CANLIB_SDK_DIR`
+  (`bin_x64` / `Bin` on Windows, `lib` on Linux).
+
+### `pcan`
+
+- **Channel:** `PCAN_USBBUS1`–`16`, `PCAN_PCIBUS1`–`16`, `PCAN_LANBUS1`–`16`,
+  or a raw handle (`0x51`).
+- **Bitrate is required.** Classic presets: 1M, 800k, 500k, 250k, 125k, 100k,
+  95k, 83k, 50k, 47k, 33k, 20k, 10k, 5k; explicit classic timing must use the
+  8 MHz SJA1000 clock. FD presets (80 MHz clock): nominal 125k/250k/500k/1M,
+  data 500k/1M/2M/4M/8M.
+- **Timestamps:** 1 µs resolution.
+- **Not supported:** `flush_tx` (PCAN's only flush also drops received frames).
+- **Library:** `PCANBasic.dll` / `libpcanbasic.so`; override with
+  `PCAN_SDK_DIR` (`x64` / `x86` on Windows).
+
+### `virtual`
+
+- **Channel:** any string. Every bus on the same name in the process is
+  connected.
+- Classic CAN unless the config enables FD; sending FD frames on a classic
+  bus fails as it would on hardware.
+- **Options:** `receive_own_messages` (default `false`).
+
+## embedded-can
+
+`Bus` implements `embedded_can::blocking::Can` and `embedded_can::nb::Can`.
+For any other `CanBus`, wrap it: `canbus::EmbeddedCan(my_bus)`. Error frames
+surface as `EmbeddedCanError::Bus` with the decoded `embedded_can::ErrorKind`.
+
+## Writing a backend
+
+Depend on `canbus-core`, implement `CanBus` for your bus type, and export a
+descriptor:
+
+```rust
+use canbus_core::{BusConfig, CanBus, ChannelInfo, Interface, Result};
+
+fn open(config: &BusConfig) -> Result<Box<dyn CanBus>> {
+    # let _ = config; unimplemented!()
+    // Ok(Box::new(MyBus::open(config)?))
+}
+
+fn detect() -> Result<Vec<ChannelInfo>> {
+    Ok(Vec::new())
+}
+
+pub const INTERFACE: Interface = Interface::new("mybackend", "My CAN adapter", open, detect);
+```
+
+Users open it with `canbus::Bus::open_with(&mybackend::INTERFACE, &config)`.
+Follow the trait's timeout, filter and threading rules; `canbus_core::Deadline`
+helps with polling loops. The `canbus-virtual` crate is a compact reference
+implementation.
+
+## Migrating from the `canlib` / `pcan` crates
+
+| Before | After |
 |---|---|
-| `EXCLUSIVE` | Prevent other applications from using this channel |
-| `REQUIRE_EXTENDED` | Require extended CAN (2.0B) support |
-| `ACCEPT_VIRTUAL` | Allow opening virtual channels |
-| `OVERRIDE_EXCLUSIVE` | Override another handle's exclusive access |
-| `REQUIRE_INIT_ACCESS` | Require permission to set bus parameters |
-| `NO_INIT_ACCESS` | Open without init access |
-| `ACCEPT_LARGE_DLC` | Accept DLC values greater than 8 |
-| `CAN_FD` | Open for CAN FD (ISO 11898-1:2015) |
-| `CAN_FD_NONISO` | Open for non-ISO CAN FD |
-
-### Configuring Bus Parameters
-
-**Predefined bitrates (recommended):**
-
-```rust
-use canlib::Bitrate;
-
-ch.set_bitrate(Bitrate::Rate500K)?;
-```
-
-Available: `Rate1M`, `Rate500K`, `Rate250K`, `Rate125K`, `Rate100K`, `Rate83K`, `Rate62K`, `Rate50K`, `Rate10K`.
-
-**Custom timing parameters:**
-
-```rust
-use canlib::BusParams;
-
-ch.set_bus_params(&BusParams {
-    freq: 500_000,
-    tseg1: 4,
-    tseg2: 3,
-    sjw: 1,
-    no_samp: 1,
-    sync_mode: 0,
-})?;
-```
-
-**Time-quanta parameters:**
-
-```rust
-use canlib::BusParamsTq;
-
-ch.set_bus_params_tq(&BusParamsTq {
-    tq: 8,
-    phase1: 2,
-    phase2: 2,
-    sjw: 1,
-    prop: 2,
-    prescaler: 4,
-})?;
-```
-
-**Reading back current parameters:**
-
-```rust
-let params = ch.get_bus_params()?;
-println!("Frequency: {} Hz", params.freq);
-```
-
-### Driver Output Mode
-
-```rust
-use canlib::DriverType;
-
-ch.set_output_control(DriverType::Normal)?;     // Normal operation
-ch.set_output_control(DriverType::Silent)?;      // Listen-only mode
-```
-
-Available: `Normal`, `Silent`, `SelfReception`, `Off`.
-
-### Going On-Bus / Off-Bus
-
-```rust
-ch.bus_on()?;           // Start participating in CAN traffic
-ch.bus_off()?;          // Stop participating
-ch.reset_bus()?;        // Reset the CAN controller
-
-if ch.is_on_bus() {
-    println!("Channel is active");
-}
-```
-
-### Creating Messages
-
-CAN identifiers are typed: pass a `StandardId` (11-bit, 0..=0x7FF) or
-an `ExtendedId` (29-bit, 0..=0x1FFF_FFFF) to choose the format. Both
-are re-exported from canlib for convenience.
-
-**Standard CAN (11-bit ID):**
-
-```rust
-use canlib::{CanMessage, StandardId};
-
-let id = StandardId::new(0x123).unwrap();
-let msg = CanMessage::new(id, &[0x01, 0x02, 0x03]);
-```
-
-**Extended CAN (29-bit ID):**
-
-```rust
-use canlib::{CanMessage, ExtendedId};
-
-let id = ExtendedId::new(0x1ABCDEF).unwrap();
-let msg = CanMessage::new(id, &[0x01, 0x02, 0x03]);
-```
-
-**CAN FD (up to 64 bytes, with optional Bit Rate Switch):**
-
-```rust
-use canlib::{Brs, CanMessage, StandardId};
-
-let data: Vec<u8> = (0..32).collect();
-let id = StandardId::new(0x456).unwrap();
-let msg = CanMessage::new_fd(id, &data, Brs::On);
-```
-
-**Remote Transmission Request (RTR):**
-
-```rust
-use canlib::{CanMessage, StandardId, ExtendedId};
-
-let rtr = CanMessage::new_remote(StandardId::new(0x123).unwrap(), 4);
-let rtr_ext = CanMessage::new_remote(ExtendedId::new(0x1ABCDEF).unwrap(), 8);
-```
-
-**Inspecting a message:**
-
-```rust
-msg.is_extended();    // 29-bit ID?
-msg.is_fd();          // CAN FD frame?
-msg.is_rtr();         // Remote Transmission Request?
-msg.is_error_frame(); // Error frame?
-```
-
-**Pattern matching on frame type:**
-
-`CanMessage` is an enum with `Data`, `Remote`, and `Error` variants, so you can match on the frame type:
-
-```rust
-use canlib::{CanMessage, DataFrame, RemoteFrame, ErrorFrame};
-
-match msg {
-    CanMessage::Data(frame) => {
-        println!("Data frame: id=0x{:X} payload={:02X?}", msg.id(), msg.data());
-    }
-    CanMessage::Remote(_) => {
-        println!("RTR frame: id=0x{:X} dlc={}", msg.id(), msg.dlc());
-    }
-    CanMessage::Error(_) => {
-        println!("Error frame received");
-    }
-}
-```
-
-### Sending Messages
-
-```rust
-use std::time::Duration;
-
-// Non-blocking send (queues the message)
-ch.write(&msg)?;
-
-// Send and wait for transmission (with timeout)
-ch.write_wait(&msg, Duration::from_secs(1))?;
-
-// Wait for all queued messages to be transmitted
-ch.write_sync(Duration::from_secs(1))?;
-```
-
-### Receiving Messages
-
-```rust
-use canlib::CanError;
-use std::time::Duration;
-
-// Non-blocking read (returns Err(CanError::NoMsg) if queue is empty)
-match ch.read() {
-    Ok(msg) => println!("Got: 0x{:X}", msg.id()),
-    Err(CanError::NoMsg) => println!("No message"),
-    Err(e) => return Err(e),
-}
-
-// Blocking read with timeout
-let msg = ch.read_wait(Duration::from_secs(2))?;
-println!("id=0x{:X} data={:02X?} timestamp={}us",
-    msg.id(), msg.data(), msg.timestamp().unwrap_or(0));
-
-// Wait for any message to arrive (doesn't consume it)
-ch.read_sync(Duration::from_secs(5))?;
-let msg = ch.read()?;
-
-// Read only messages with a specific ID
-let id = canlib::StandardId::new(0x123).unwrap();
-let msg = ch.read_specific(id.into())?;
-
-// Read specific ID, discarding non-matching messages from the queue
-let msg = ch.read_specific_skip(id.into())?;
-```
-
-### Acceptance Filters
-
-Limit which messages are received:
-
-```rust
-// Accept only messages with a specific standard (11-bit) ID
-ch.set_acceptance_filter(0x123, 0x7FF, false)?;
-
-// Accept only messages with a specific extended (29-bit) ID
-ch.set_acceptance_filter(0x1ABCDEF, 0x1FFFFFFF, true)?;
-
-// Accept a range of IDs (mask bits: 1 = must match, 0 = don't care)
-ch.set_acceptance_filter(0x100, 0x700, false)?; // Accepts 0x100-0x1FF
-```
-
-### Bus Status and Diagnostics
-
-```rust
-// Read bus status flags
-let status = ch.read_status()?;
-if status.contains(canlib::BusStatus::BUS_OFF) {
-    println!("Bus is OFF");
-}
-if status.contains(canlib::BusStatus::ERROR_PASSIVE) {
-    println!("Error passive");
-}
-
-// Read error counters
-let counters = ch.read_error_counters()?;
-println!("TX errors: {}, RX errors: {}, Overruns: {}",
-    counters.tx_errors, counters.rx_errors, counters.overrun_errors);
-
-// Bus statistics (request first, then read)
-ch.request_bus_statistics()?;
-let stats = ch.get_bus_statistics()?;
-println!("Bus load: {:.1}%", stats.bus_load_percent());
-println!("Std frames: {}, Ext frames: {}", stats.std_data, stats.ext_data);
-```
-
-### Queue Management
-
-```rust
-ch.flush_rx()?;   // Discard all messages in the receive queue
-ch.flush_tx()?;   // Discard all messages in the transmit queue
-```
-
-### Advanced: Raw Handle Access
-
-For functionality not yet wrapped, you can access the raw CANLib handle and call `canlib-sys` functions directly:
-
-```rust
-let handle = ch.raw_handle();
-// Use with canlib_sys functions:
-// unsafe { canlib_sys::canSomeFunction(handle, ...) }
-```
-
-## CAN FD
-
-To use CAN FD, open the channel with the `CAN_FD` flag and configure both arbitration and data phase bitrates:
-
-```rust
-use canlib::{Bitrate, CanMessage, Channel, DriverType, OpenFlags};
-
-let mut ch = Channel::open(0,
-    OpenFlags::CAN_FD | OpenFlags::ACCEPT_VIRTUAL | OpenFlags::REQUIRE_INIT_ACCESS
-)?;
-
-// Arbitration phase: 500 kbit/s
-ch.set_bitrate(Bitrate::Rate500K)?;
-
-// Data phase: custom timing (2 Mbit/s)
-ch.set_bus_params_fd(2_000_000, 5, 2, 1)?;
-
-ch.set_output_control(DriverType::Normal)?;
-ch.bus_on()?;
-
-// Send a CAN FD message with BRS
-use canlib::{Brs, StandardId};
-let data: Vec<u8> = (0..48).collect();
-let id = StandardId::new(0x456).unwrap();
-let msg = CanMessage::new_fd(id, &data, Brs::On)?;
-ch.write(&msg)?;
-```
-
-## Error Handling
-
-All fallible operations return `canlib::Result<T>`, which is `Result<T, CanError>`. The `CanError` enum has a variant for every CANLib status code:
-
-```rust
-use canlib::CanError;
-
-match ch.read() {
-    Ok(msg) => { /* process message */ }
-    Err(CanError::NoMsg) => { /* no message available */ }
-    Err(CanError::Timeout) => { /* operation timed out */ }
-    Err(CanError::InvalidHandle) => { /* handle is invalid */ }
-    Err(CanError::Hardware) => { /* hardware error */ }
-    Err(e) => eprintln!("Error: {}", e),
-}
-```
-
-All error variants implement `Display` with human-readable messages.
-
-## Thread Safety
-
-- The CANLib library is initialized once, thread-safely, using `std::sync::Once`.
-- `Channel` is **not `Send`** and **not `Sync`** because CANlib handles are thread-affine — they must be used on the thread that created them. Each thread that needs CAN access must open its own channel.
-- Multiple threads can open the same physical channel number independently.
-
-## Resource Cleanup
-
-`Channel` implements `Drop`. When a `Channel` goes out of scope:
-
-1. If the channel is on-bus, `canBusOff` is called automatically.
-2. `canClose` is called to release the handle.
-
-You never need to manually close a channel.
-
-## Examples
-
-The crate includes four runnable examples:
-
-```sh
-# List all available CAN channels
-cargo run --example list_channels
-
-# Send and receive messages on channel 0
-cargo run --example send_receive
-
-# Send a CAN FD message
-cargo run --example canfd
-
-# Full test suite using virtual channels (requires virtual CAN driver)
-cargo run --example virtual_loopback --features virtual-tests
-```
-
-### Virtual Channel Testing
-
-The Kvaser Virtual CAN Driver (included with the SDK on Windows) provides two channels connected via a virtual bus. This allows full testing without physical hardware:
-
-```sh
-cargo run --example virtual_loopback
-```
-
-This runs 5 tests: single message, multiple messages, extended ID, bidirectional, and a 100-message burst.
+| `canlib::Channel::open(0, OpenFlags::ACCEPT_VIRTUAL)` + `set_bitrate` + `bus_on` | `Bus::open(&BusConfig::new("kvaser", "0").bitrate(500_000))` |
+| `pcan::PcanChannel::open(PcanBus::Usb(1))` + `set_bitrate` + `bus_on` | `Bus::open(&BusConfig::new("pcan", "PCAN_USBBUS1").bitrate(500_000))` |
+| `Bitrate::Rate500K` / `FdBitrate::Rate2M80P` | `.bitrate(500_000)` / `.fd(2_000_000)` |
+| `ch.write(&msg)` / `ch.write_wait(&msg, t)` | `bus.send(&msg, Some(Duration::ZERO))` / `bus.send(&msg, Some(t))` |
+| `ch.read()` → `Err(CanError::NoMsg)` | `bus.recv(Some(Duration::ZERO))` → `Ok(None)` |
+| `ch.read_wait(t)` → `Err(CanError::Timeout)` | `bus.recv(Some(t))` → `Ok(None)` |
+| `ch.set_acceptance_filter(&f)` | `bus.set_filters(&[f])` |
+| `ch.read_status()` / `read_error_counters()` | `bus.status()` |
+| `set_output_control(DriverType::Silent)` | `.listen_only(true)` |
+| `msg.dlc()` (bytes) | `msg.len()` (bytes); `msg.dlc()` is now the DLC code |
+| `msg.timestamp()` → `Option<u64>` | `Option<Duration>` |
+| `CanError` | `Error` |
+| `can_core::mock::MockChannel` | the `virtual` interface |
+
+Removed with no direct replacement: `read_specific`, `write_sync`, bus
+statistics, raw handles and vendor status-code helpers. These were
+Kvaser-only; open an issue if you need one back in a vendor-neutral form.

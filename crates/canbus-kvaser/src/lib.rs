@@ -1,178 +1,74 @@
-//! Safe, idiomatic Rust wrapper for the Kvaser CANLib SDK.
+//! Kvaser CANlib backend for the [`canbus`](https://docs.rs/canbus) crate
+//! family.
 //!
-//! Backed by the shared [`canbus_core`] crate — the vendor-agnostic message,
-//! trait, and error types are re-exported at the crate root so the public
-//! API surface stays stable.
+//! Applications normally use this through `canbus::Bus` with interface name
+//! `"kvaser"`; depend on this crate directly only to skip the facade.
 //!
-//! # Getting started
+//! The Kvaser CANlib library (`canlib32.dll` on Windows, `libcanlib.so` on
+//! Linux) is loaded at runtime the first time a bus is opened. Set
+//! `CANLIB_SDK_DIR` to load it from a non-standard location. On platforms
+//! Kvaser doesn't support, opening fails with
+//! [`Error::LibraryNotLoaded`](canbus_core::Error::LibraryNotLoaded).
 //!
-//! ```no_run
-//! use canbus_kvaser::{Channel, OpenFlags, Bitrate, CanMessage, StandardId};
-//! use std::time::Duration;
+//! # Configuration
 //!
-//! let num = canbus_kvaser::get_number_of_channels().unwrap();
-//! println!("Found {} CAN channels", num);
+//! - **Channel:** the CANlib channel index, e.g. `"0"`. Use
+//!   [`detect`] to list channels.
+//! - **Bitrate:** standard rates (1M, 500k, 250k, 125k, 100k, 83.3k, 62.5k,
+//!   50k, 10k) use CANlib's presets; other rates let CANlib derive the
+//!   timing. Explicit [`Timing`](canbus_core::Timing) is passed through.
+//! - **CAN FD:** data bitrates of 500k, 1M, 2M, 4M and 8M use presets
+//!   (80 % sample point); anything else needs explicit data timing.
+//! - **Listen-only:** sets the silent driver mode.
 //!
-//! let mut ch = Channel::open(0, OpenFlags::ACCEPT_VIRTUAL).unwrap();
-//! ch.set_bitrate(Bitrate::Rate500K).unwrap();
-//! ch.bus_on().unwrap();
+//! Options ([`BusConfig::option`](canbus_core::BusConfig::option)):
 //!
-//! let id = StandardId::new(0x123).unwrap();
-//! let msg = CanMessage::new(id, &[0xDE, 0xAD, 0xBE, 0xEF]).unwrap();
-//! ch.write(&msg).unwrap();
+//! | Key | Default | Meaning |
+//! |---|---|---|
+//! | `accept_virtual` | `true` | Allow opening Kvaser virtual channels |
+//! | `exclusive` | `false` | Open with exclusive access |
+//! | `fd_non_iso` | `false` | Use non-ISO (Bosch) CAN FD |
 //!
-//! match ch.read_wait(Duration::from_secs(1)) {
-//!     Ok(rx) => println!("Received: id=0x{:X} data={:?}", rx.id(), rx.data()),
-//!     Err(canbus_kvaser::CanError::Timeout) => println!("No message received"),
-//!     Err(e) => eprintln!("Error: {}", e),
-//! }
-//! ```
+//! Timestamps have 10 µs resolution where the device supports it (1 ms
+//! otherwise), counted from when the driver started.
 
-pub mod bus_params;
-pub mod channel;
-pub mod error;
+mod bus;
+mod convert;
 mod ffi;
-pub mod message;
-pub mod status;
 
-// Re-export everything from canbus-core so existing canbus_kvaser::* imports keep
-// working unchanged.
-pub use canbus_core::{
-    blocking_receive, blocking_transmit, decode_error_frame, nb_receive, nb_transmit, Bitrate, Brs,
-    BusError, BusErrorKind, BusParams, BusParamsTq, BusStatistics, BusStatus, CanBusControl,
-    CanChannel, CanDiagnostics, CanError, CanMessage, CanRead, CanWrite, DataFrame, DriverType,
-    EmbeddedCanError, ErrorCounters, ErrorFrame, ExtendedId, FdBitrate, Filter, Frame, Id,
-    MessageFlags, RemoteFrame, Result, StandardId, CANFD_MAX_DLC, CAN_EXT_ID_MAX, CAN_MAX_DLC,
-    CAN_STD_ID_MAX,
-};
+use canbus_core::{BusConfig, CanBus, Interface, Result};
 
-// Re-export embedded-can since downstream consumers may want it.
-pub use canbus_core::embedded_can;
+pub use bus::{detect, KvaserBus};
 
-pub use channel::{Channel, OpenFlags};
-pub use error::{from_canlib_status, to_canlib_status};
+pub(crate) const NAME: &str = "kvaser";
 
-use std::sync::Once;
+/// Descriptor for the Kvaser backend.
+pub const INTERFACE: Interface = Interface::new(NAME, "Kvaser CANlib", open, detect);
 
-/// Buffer size for channel data string queries and error text lookups.
-const CHANNEL_DATA_BUF_SIZE: usize = 256;
-
-static INIT: Once = Once::new();
-
-/// Ensure the CANLib library is initialized. Called automatically by [`Channel::open`].
-pub fn ensure_initialized() -> Result<()> {
-    let lib = error::lib()?;
-    INIT.call_once(|| unsafe {
-        (lib.canInitializeLibrary)();
-    });
-    Ok(())
+fn open(config: &BusConfig) -> Result<Box<dyn CanBus>> {
+    Ok(Box::new(KvaserBus::open(config)?))
 }
 
-/// Get the CANLib version as a (major, minor) tuple.
-pub fn get_version() -> Result<(u8, u8)> {
-    ensure_initialized()?;
-    let lib = error::lib()?;
-    let v = unsafe { (lib.canGetVersion)() };
-    Ok(((v >> 8) as u8, (v & 0xFF) as u8))
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-/// Get the number of available CAN channels.
-pub fn get_number_of_channels() -> Result<i32> {
-    ensure_initialized()?;
-    let lib = error::lib()?;
-    let mut count: i32 = 0;
-    let status = unsafe { (lib.canGetNumberOfChannels)(&mut count) };
-    if status >= 0 {
-        Ok(count)
-    } else {
-        Err(from_canlib_status(status))
-    }
-}
+    fn assert_send<T: Send>() {}
 
-/// Information about a CAN channel.
-#[derive(Debug, Clone)]
-pub struct ChannelInfo {
-    /// Channel index.
-    pub index: i32,
-    /// Channel name.
-    pub name: String,
-    /// Device description.
-    pub device_description: String,
-    /// Card serial number.
-    pub serial_number: u64,
-}
-
-/// Enumerate all available CAN channels.
-pub fn enumerate_channels() -> Result<Vec<ChannelInfo>> {
-    let count = get_number_of_channels()?;
-    let mut channels = Vec::with_capacity(count as usize);
-
-    for i in 0..count {
-        let name = get_channel_string(i, crate::ffi::canCHANNELDATA_CHANNEL_NAME)?;
-        let desc = get_channel_string(i, crate::ffi::canCHANNELDATA_DEVDESCR_ASCII)?;
-
-        let lib = error::lib()?;
-        let mut serial: u64 = 0;
-        let status = unsafe {
-            (lib.canGetChannelData)(
-                i,
-                crate::ffi::canCHANNELDATA_CARD_SERIAL_NO,
-                &mut serial as *mut u64 as *mut std::os::raw::c_void,
-                std::mem::size_of::<u64>(),
-            )
-        };
-        if status < 0 {
-            return Err(from_canlib_status(status));
-        }
-
-        channels.push(ChannelInfo {
-            index: i,
-            name,
-            device_description: desc,
-            serial_number: serial,
-        });
+    #[test]
+    fn bus_is_send() {
+        assert_send::<KvaserBus>();
     }
 
-    Ok(channels)
-}
-
-/// Get the error text for a status code from the CANLib SDK.
-pub fn get_error_text(err: CanError) -> String {
-    let code = to_canlib_status(&err);
-    let lib = match error::lib() {
-        Ok(lib) => lib,
-        Err(_) => return format!("Unknown error ({})", code),
-    };
-    let mut buf = [0u8; CHANNEL_DATA_BUF_SIZE];
-    let status = unsafe {
-        (lib.canGetErrorText)(
-            code,
-            buf.as_mut_ptr() as *mut std::os::raw::c_char,
-            buf.len() as u32,
-        )
-    };
-    if status >= 0 {
-        let len = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
-        String::from_utf8_lossy(&buf[..len]).to_string()
-    } else {
-        format!("Unknown error ({})", code)
+    #[test]
+    fn non_numeric_channel_is_rejected_before_loading() {
+        // Validation happens after loading the library, so on machines
+        // without CANlib this reports LibraryNotLoaded instead; either way
+        // it must not panic.
+        let err = KvaserBus::open(&BusConfig::new(NAME, "usb0")).unwrap_err();
+        assert!(matches!(
+            err,
+            canbus_core::Error::InvalidConfig(_) | canbus_core::Error::LibraryNotLoaded { .. }
+        ));
     }
-}
-
-fn get_channel_string(channel: i32, item: i32) -> Result<String> {
-    let lib = error::lib()?;
-    let mut buf = [0u8; CHANNEL_DATA_BUF_SIZE];
-    let status = unsafe {
-        (lib.canGetChannelData)(
-            channel,
-            item,
-            buf.as_mut_ptr() as *mut std::os::raw::c_void,
-            buf.len(),
-        )
-    };
-    if status < 0 {
-        return Err(from_canlib_status(status));
-    }
-    let len = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
-    Ok(String::from_utf8_lossy(&buf[..len]).to_string())
 }

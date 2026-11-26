@@ -1,39 +1,65 @@
-//! Vendor-agnostic CAN traits, message types, and embedded-can integration.
+//! The stable contract of the `canbus` crate family.
 //!
-//! This crate defines the shared surface that backend crates (`canbus-kvaser`,
-//! `canbus-pcan`) implement. Generic code can be written against [`CanChannel`]
-//! (or one of the sub-traits) and stay portable across backends.
+//! This crate defines what every CAN backend implements and what every
+//! application programs against:
+//!
+//! - [`CanMessage`] — a classic or FD frame
+//! - [`BusConfig`] — which interface/channel to open, bitrates and options
+//! - [`CanBus`] — an open bus: send, receive, filter, status
+//! - [`Interface`] — a backend descriptor; backend crates export one as
+//!   `INTERFACE`
+//! - [`Error`] — vendor-neutral errors
+//!
+//! Applications normally depend on the `canbus` facade crate, which
+//! re-exports everything here and selects backends at runtime. Depend on
+//! `canbus-core` directly only to write a backend.
+//!
+//! # Writing a backend
+//!
+//! Implement [`CanBus`] for your bus type and export a descriptor:
+//!
+//! ```
+//! use canbus_core::{BusConfig, CanBus, ChannelInfo, Interface, Result};
+//!
+//! fn open(config: &BusConfig) -> Result<Box<dyn CanBus>> {
+//!     # let _ = config;
+//!     # Err(canbus_core::Error::ChannelNotFound)
+//!     // Validate `config`, open the device, return Box::new(MyBus { .. })
+//! }
+//!
+//! fn detect() -> Result<Vec<ChannelInfo>> {
+//!     Ok(Vec::new())
+//! }
+//!
+//! pub const INTERFACE: Interface = Interface::new("mybackend", "My CAN adapter", open, detect);
+//! ```
 
-pub mod bus_params;
-pub mod channel;
-pub mod embedded_can_glue;
-pub mod error;
-pub mod message;
-pub mod status;
+mod bus;
+mod config;
+mod embedded;
+mod error;
+mod filter;
+mod frame;
+mod interface;
 
-#[cfg(feature = "mock")]
-pub mod mock;
-
-// Re-export embedded-can so downstream crates can access trait/id types
-// without a separate dependency declaration.
+// Re-exported so downstream crates can use the ID and trait types without
+// declaring their own dependency.
 pub use embedded_can;
-
-// Used by the exported `impl_embedded_can!` macro so callers don't need
-// their own `nb` dependency.
-#[doc(hidden)]
 pub use nb;
 
-pub use bus_params::{Bitrate, BusParams, BusParamsTq, DriverType, FdBitrate};
-pub use channel::{CanBusControl, CanChannel, CanDiagnostics, CanRead, CanWrite, Filter};
-pub use embedded_can::ErrorKind as BusErrorKind;
-pub use embedded_can::{ExtendedId, Frame, Id, StandardId};
-pub use embedded_can_glue::{
+pub use bus::{BusState, BusStatus, CanBus, Capabilities, Deadline, ErrorCounters};
+pub use config::{parse_bool, BusConfig, FdConfig, Timing};
+pub use embedded::{
     blocking_receive, blocking_transmit, decode_error_frame, nb_receive, nb_transmit, BusError,
-    EmbeddedCanError,
+    EmbeddedCan, EmbeddedCanError,
 };
-pub use error::{CanError, Result};
-pub use message::{
-    id_to_raw_and_flag, Brs, CanMessage, DataFrame, ErrorFrame, MessageFlags, RemoteFrame,
-    CANFD_MAX_DLC, CAN_EXT_ID_MAX, CAN_MAX_DLC, CAN_STD_ID_MAX,
+pub use embedded_can::ErrorKind as BusErrorKind;
+pub use embedded_can::{ExtendedId, Id, StandardId};
+pub use error::{Error, Result};
+pub use filter::{Filter, FilterSupport};
+pub use frame::{
+    dlc_to_len, fd_len_round_up, id_to_raw_and_flag, len_to_dlc, Brs, CanMessage, DataFrame,
+    ErrorFrame, MessageFlags, RemoteFrame, CANFD_MAX_LEN, CAN_EXT_ID_MAX, CAN_MAX_LEN,
+    CAN_STD_ID_MAX,
 };
-pub use status::{BusStatistics, BusStatus, ErrorCounters};
+pub use interface::{ChannelInfo, DetectFn, Interface, OpenFn};

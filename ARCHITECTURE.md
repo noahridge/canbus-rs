@@ -1,158 +1,118 @@
-# canlib-rs Architecture
+# Architecture
 
-This document describes the internal architecture of `canlib-rs`, a Rust wrapper for the Kvaser CANLib SDK.
+`canbus` follows the same shape as python-can: a vendor-neutral interface,
+backends that implement it, and a facade that selects a backend at runtime.
 
-## Crate Structure
-
-The project is organized as a Cargo workspace with two crates:
-
-```
-canlib-rs/
-├── Cargo.toml              # Workspace root
-├── canlib-sys/             # Layer 1: Raw FFI bindings
-│   ├── build.rs            # Build script (SDK detection + bindgen)
-│   ├── wrapper.h           # C header entry point
-│   └── src/lib.rs          # FFI types, constants, extern "C" declarations
-└── canlib/                 # Layer 2: Safe idiomatic Rust wrapper
-    ├── src/
-    │   ├── lib.rs          # Public API, initialization, channel enumeration
-    │   ├── channel.rs      # Channel handle (open/close/read/write/bus control)
-    │   ├── message.rs      # CAN message types and flags
-    │   ├── error.rs        # Error enum and status code mapping
-    │   ├── bus_params.rs   # Bitrate, timing, and driver configuration
-    │   └── status.rs       # Bus status, error counters, statistics
-    └── examples/           # Usage examples
-```
-
-## Layer 1: `canlib-sys` (FFI Bindings)
-
-This crate follows the Rust `-sys` crate convention. Its job is to expose the raw C API to Rust code.
-
-### Build Script (`build.rs`)
-
-The build script handles two concerns:
-
-1. **SDK Discovery** — Locates the Kvaser CANLib SDK on the host system by checking:
-   - The `CANLIB_SDK_DIR` environment variable (highest priority)
-   - Windows default paths: `C:\Program Files (x86)\Kvaser\Canlib`, `C:\Program Files\Kvaser\CANlib SDK`
-   - Linux: `/usr/include/canlib.h` (from the linuxcan package)
-
-2. **Binding Generation** — Attempts to run `bindgen` against `canlib.h` to auto-generate FFI declarations. If `libclang` is not available (bindgen panics), it catches the panic and falls back to an empty bindings file. The manual `extern "C"` blocks in `lib.rs` provide all required function declarations regardless.
-
-### Linking
-
-The build script emits Cargo link directives:
-- **Windows**: `cargo:rustc-link-lib=canlib32` with search path `Lib/x64` (64-bit) or `Lib/MS` (32-bit)
-- **Linux**: `cargo:rustc-link-lib=canlib`
-
-### `src/lib.rs`
-
-Contains three categories of declarations:
-
-- **`include!` of bindgen output** — Auto-generated types and functions (empty if bindgen unavailable)
-- **Manual constants** — All `canERR_*`, `canOPEN_*`, `canBITRATE_*`, `canMSG_*`, `canFDMSG_*`, `canDRIVER_*`, `canSTAT_*`, and `canCHANNELDATA_*` constants
-- **Manual `extern "C"` blocks** — Complete function declarations for all wrapped CANLib functions, ensuring the crate works even without bindgen
-
-This dual approach (bindgen + manual fallback) maximizes portability: the crate compiles whether or not LLVM/Clang is installed.
-
-## Layer 2: `canlib` (Safe Wrapper)
-
-This crate provides a safe, ergonomic Rust API. It depends on `canlib-sys`, `bitflags`, and `thiserror`.
-
-### Module Dependency Graph
+## Crates
 
 ```
-lib.rs
-├── error.rs        (no internal deps)
-├── message.rs      (no internal deps)
-├── bus_params.rs   (no internal deps)
-├── status.rs       (no internal deps)
-└── channel.rs      (depends on all of the above)
+crates/
+├── canbus-core/     The contract. No FFI, no OS code; changes rarely.
+├── canbus/          Facade applications depend on. Re-exports canbus-core.
+├── canbus-kvaser/   Kvaser CANlib backend
+├── canbus-pcan/     PEAK PCAN-Basic backend
+└── canbus-virtual/  In-process virtual bus
 ```
 
-`lib.rs` re-exports the primary types from all modules at the crate root for convenience.
+```
+            application
+                 │
+              canbus  ──────────────┬──────────────┬───────────────┐
+                 │                  │              │               │
+            canbus-core ◄── canbus-kvaser   canbus-pcan   canbus-virtual
+                 ▲
+                 └── third-party backends (opened with Bus::open_with)
+```
 
-### Error Handling (`error.rs`)
+### Why several crates
 
-All CANLib functions return `canStatus` (a signed integer). The error module provides:
+- **A stable contract for third-party backends.** Rust treats the same trait
+  from two semver-incompatible versions of a crate as different traits. Keeping
+  `CanBus` in `canbus-core`, which only changes when the contract does, lets
+  backends written against it keep working while `canbus` evolves.
+- **In-tree backends prove the contract.** `canbus-kvaser` and `canbus-pcan`
+  can only use `canbus-core`'s public API, so anything a third party would
+  need is guaranteed to be public.
+- **Dependency isolation.** Each backend carries only its own dependencies;
+  applications trim backends with Cargo features on `canbus`.
 
-- `CanError` — An enum with a variant for each known `canERR_*` code, plus `Unknown(i32)` as a catch-all. Uses `thiserror` for `Display` and `Error` trait implementations.
-- `Result<T>` — Type alias for `std::result::Result<T, CanError>`.
-- `check_status()` — Converts a raw `canStatus` into `Result<()>` (non-negative = success).
-- `check_handle()` — Converts a raw return value into `Result<canHandle>` (used by `canOpenChannel` which returns a handle on success, negative on error).
+### Why no `-sys` crates
 
-Every unsafe FFI call in the wrapper is checked through one of these functions.
+`-sys` crates exist for libraries linked at build time. Both vendor libraries
+are loaded at runtime with `libloading`, so each backend keeps its bindings in
+a private `ffi` module. That keeps raw vendor types out of every public API
+and lets bindings change without a semver break.
 
-### Message Types (`message.rs`)
+## canbus-core
 
-- `CanMessage` — An enum with three variants representing different CAN frame types:
-  - `Data(DataFrame)` — Standard data frames (classic CAN and CAN FD)
-  - `Remote(RemoteFrame)` — Remote Transmission Request frames (no payload)
-  - `Error(ErrorFrame)` — Error frames from the controller
-
-  This design uses the type system to enforce valid frame types — invalid combinations (e.g., an error frame with FD+BRS flags) cannot be represented. Shared accessors (`id()`, `data()`, `dlc()`, `flags()`, `timestamp()`) delegate via match, and query methods (`is_rtr()`, `is_error_frame()`) use `matches!()` on the variant. Constructors take typed `embedded_can::Id` values (`StandardId` for 11-bit, `ExtendedId` for 29-bit) so the std/ext distinction is enforced at compile time: `new()` for classic CAN data frames, `new_fd()` for CAN FD (BRS controlled by the `Brs::On`/`Brs::Off` enum), `new_remote()` for RTR. The `from_raw()` constructor dispatches to the appropriate variant based on flags (ERROR_FRAME > RTR > Data).
-- `MessageFlags` — A `bitflags` type mapping CANLib's message flag constants (RTR, STD, EXT, FD, BRS, ESI, etc.).
-
-### Bus Parameters (`bus_params.rs`)
-
-- `Bitrate` — Enum of predefined classic CAN bitrates (10K through 1M).
-- `FdBitrate` — Enum of predefined CAN FD data-phase bitrates.
-- `BusParams` — Custom timing struct (freq, tseg1, tseg2, sjw, noSamp, syncMode).
-- `BusParamsTq` — Time-quanta timing struct, with `to_raw()`/`from_raw()` conversions to the FFI `kvBusParamsTq`.
-- `DriverType` — Transceiver mode enum (Normal, Silent, SelfReception, Off).
-
-### Channel (`channel.rs`)
-
-`Channel` is the central type. It wraps a `canHandle` and manages its lifecycle.
-
-**Ownership and RAII:**
-- `Channel::open()` calls `canOpenChannel` and returns a `Channel`.
-- `Drop` implementation calls `canBusOff` (if on-bus) then `canClose`, ensuring resources are always released.
-
-**Thread Safety:**
-- `Channel` is `!Send` and `!Sync`. CANlib handles are thread-affine — they must be used on the thread that created them. `ChannelHandle` contains `PhantomData<*const ()>` which makes both `Channel` and `ChannelHandle` automatically `!Send + !Sync`. Each thread that needs CAN access must open its own channel.
-
-**Method Categories:**
-| Category | Methods |
+| Module | Contents |
 |---|---|
-| Bus control | `bus_on`, `bus_off`, `reset_bus`, `is_on_bus` |
-| Bus params | `set_bitrate`, `set_bus_params`, `set_bus_params_tq`, `set_bus_params_fd`, `set_bus_params_fd_tq`, `get_bus_params`, `get_bus_params_tq` |
-| Driver mode | `set_output_control`, `get_output_control` |
-| Transmit | `write`, `write_wait`, `write_sync` |
-| Receive | `read`, `read_wait`, `read_sync`, `read_specific`, `read_specific_skip` |
-| Filters | `set_acceptance_filter` |
-| Status | `read_status`, `read_error_counters`, `request_chip_status`, `request_bus_statistics`, `get_bus_statistics` |
-| Queue | `flush_rx`, `flush_tx` |
-| Escape hatch | `raw_handle` |
+| `frame` | `CanMessage` (`Data` / `Remote` / `Error`), `MessageFlags`, DLC ⇄ length helpers |
+| `config` | `BusConfig`, `Timing`, `FdConfig`; backend options as string key/values |
+| `bus` | `CanBus` trait, `BusStatus`, `BusState`, `Capabilities`, `Deadline` |
+| `filter` | `Filter` (code/mask or range), `FilterSupport` |
+| `interface` | `Interface` descriptor, `ChannelInfo` |
+| `error` | `Error`, `Result` |
+| `embedded` | `embedded-can` impls and the `EmbeddedCan` adapter |
 
-**Buffer Management:**
-All read/write methods use stack-allocated `[u8; 64]` buffers internally. Data is copied between these fixed buffers and the `Vec<u8>` in `CanMessage`, keeping the unsafe FFI boundary contained.
+Design rules:
 
-### Status (`status.rs`)
+- **Vendor-neutral types only.** Vendor specifics live in
+  `BusConfig::options` and in each backend's docs, never as fields or
+  variants in the core.
+- **Configure at open.** Bitrate, FD and listen-only are part of
+  `BusConfig`, so backends whose drivers need the bitrate up front (PCAN)
+  and those that set it after opening (Kvaser) look the same.
+- **`Send`, not `Sync`.** Methods that touch the device take `&mut self`;
+  a bus is never entered concurrently, matching Kvaser's threading rules.
+- **One meaning per field.** `len()` is bytes and `dlc()` the DLC code;
+  timestamps are `Duration`s. Backends convert at the FFI boundary.
+- **Growth without breakage.** `Error`, `BusConfig`, `Capabilities`,
+  `BusState` and `Interface` are `#[non_exhaustive]` and built through
+  constructors.
 
-- `BusStatus` — `bitflags` type for bus state (ERROR_PASSIVE, BUS_OFF, ERROR_WARNING, ERROR_ACTIVE, TX_PENDING, RX_PENDING, OVERRUN).
-- `ErrorCounters` — Struct with tx/rx/overrun error counts.
-- `BusStatistics` — Struct with frame counts, bus load, and overruns. Includes `bus_load_percent()` helper.
+## Backends
 
-### Library Initialization (`lib.rs`)
+Each backend crate has the same layout:
 
-`canInitializeLibrary()` must be called once before any other CANLib function. This is handled by `ensure_initialized()` using `std::sync::Once`, and is called automatically by `Channel::open()` and the enumeration functions. Users never need to call it manually.
-
-## Safety Strategy
-
-| Concern | Approach |
+| File | Role |
 |---|---|
-| Null/dangling pointers | All raw pointer operations are confined to the sys crate and the `Channel` methods. The safe API uses `Vec<u8>` and stack buffers. |
-| Use-after-free | `Channel` owns the handle; `Drop` closes it. No way to use a closed handle through the safe API. |
-| Thread safety | `Channel: !Send + !Sync` matches CANlib's thread-affine handle model. `Once` guards initialization. |
-| Error propagation | Every FFI call is checked via `check_status`/`check_handle`. No silent failures. |
-| Resource cleanup | RAII via `Drop`. Bus is taken off before handle is closed. |
-| Buffer overflows | Read/write buffers are `CANFD_MAX_DLC` (64 bytes), matching the maximum CAN FD payload. DLC is bounds-checked. |
+| `lib.rs` | Docs (channel format, options), `INTERFACE`, re-exports |
+| `bus.rs` | The `CanBus` implementation and `detect()` |
+| `convert.rs` | Flags, status codes, bitrate presets, timeouts |
+| `ffi.rs` | Private bindings + runtime loader (`OnceLock`ed per process) |
 
-## Dependencies
+Plus backend-specific helpers (`canbus-pcan`: `channel_name.rs` for
+`PCAN_USBBUS1`-style names, `event.rs` for Win32-event / Linux-fd receive
+notification with a polling fallback).
 
-| Crate | Role | Layer |
-|---|---|---|
-| `bindgen` | Build-time C header parsing | canlib-sys (build-dep) |
-| `bitflags` | Type-safe flag sets for MessageFlags, OpenFlags, BusStatus | canlib |
-| `thiserror` | Derive `Error` + `Display` for CanError | canlib |
+### Safety strategy
+
+- All `unsafe` is confined to the backends' FFI calls, each with a `SAFETY`
+  comment. Symbol types are inferred from the binding struct's fields, so
+  each signature is declared exactly once.
+- Function pointers are `extern "system"`: `__stdcall` on 32-bit Windows
+  (as both vendor headers declare), the C ABI everywhere else.
+- Handles are owned by the bus type and released in `Drop`.
+- Library load failures are cached and reported as
+  `Error::LibraryNotLoaded` — never a panic — and the crates build on every
+  platform, including those the vendor doesn't support.
+
+## canbus (facade)
+
+- `interfaces()` is a `const` list of the compiled-in backends' descriptors;
+  `Bus::open` looks one up by name. No global mutable registry.
+- `Bus` wraps `Box<dyn CanBus>` and adds software filtering when a backend
+  reports `FilterSupport::Software`, so filters behave identically on every
+  backend.
+- `config_from_env` / `config_from_lookup` implement python-can's `CAN_*`
+  environment variables.
+
+## Testing
+
+- Unit tests in every crate run on any host (including macOS), since nothing
+  needs a vendor library to compile.
+- `crates/canbus/tests/virtual_bus.rs` exercises the facade end-to-end on the
+  virtual backend.
+- `crates/canbus/tests/hardware.rs` holds `#[ignore]`d smoke tests for Kvaser
+  virtual channels and PCAN hardware, including moving a bus across threads.

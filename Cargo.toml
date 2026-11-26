@@ -1,5 +1,11 @@
 [workspace]
-members = ["crates/canbus-core", "crates/canbus-kvaser", "crates/canbus-pcan"]
+members = [
+    "crates/canbus",
+    "crates/canbus-core",
+    "crates/canbus-kvaser",
+    "crates/canbus-pcan",
+    "crates/canbus-virtual",
+]
 resolver = "2"
 
 [workspace.package]
@@ -10,6 +16,9 @@ repository = "https://github.com/noahridge/canlib-rs"
 
 [workspace.dependencies]
 canbus-core = { path = "crates/canbus-core", version = "0.1.0" }
+canbus-kvaser = { path = "crates/canbus-kvaser", version = "0.1.0" }
+canbus-pcan = { path = "crates/canbus-pcan", version = "0.1.0" }
+canbus-virtual = { path = "crates/canbus-virtual", version = "0.1.0" }
 bitflags = "2"
 thiserror = "2"
 embedded-can = "0.4"

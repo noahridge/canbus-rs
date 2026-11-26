@@ -1,120 +1,105 @@
-# canlib-rs
+# canbus
 
-Safe, idiomatic Rust bindings for the [Kvaser CANLib SDK](https://kvaser.com/developer/canlib-sdk/). Provides access to Kvaser CAN hardware for sending and receiving CAN and CAN FD messages.
-
-## Setup
-
-### 1. Install the Kvaser CANLib SDK
-
-**Windows:**
-Download and run the installer from [kvaser.com/developer/canlib-sdk](https://kvaser.com/developer/canlib-sdk/). This installs the SDK, drivers, and the Virtual CAN driver.
-
-**Linux:**
-Install the [linuxcan](https://www.kvaser.com/linux-drivers-and-sdk-2/) package.
-
-### 2. Verify the SDK is found
-
-The library loads `canlib32.dll` (Windows) or `libcanlib.so` (Linux) at runtime. The standard SDK installer places this on the system library path automatically.
-
-If the SDK is installed in a non-standard location, set the `CANLIB_SDK_DIR` environment variable:
-
-```sh
-# Windows (PowerShell)
-$env:CANLIB_SDK_DIR = "C:\path\to\Kvaser\Canlib"
-
-# Windows (cmd)
-set CANLIB_SDK_DIR=C:\path\to\Kvaser\Canlib
-
-# Linux
-export CANLIB_SDK_DIR=/opt/kvaser/canlib
-```
-
-The library will look for the shared library inside this directory first, then fall back to the system search path.
-
-### 3. Add the dependency
-
-```toml
-[dependencies]
-canlib = { path = "path/to/canlib-rs/canlib" }
-```
-
-### 4. Hardware
-
-You need either:
-- **Kvaser CAN hardware** (USB interfaces, PCIe cards, etc.)
-- **Kvaser Virtual CAN Driver** (included with the Windows SDK installer) — provides two virtual channels connected via a virtual bus, no hardware required
-
-## Quick start
+Cross-platform CAN bus access for Rust, with backends selected at runtime —
+in the spirit of Python's [python-can](https://python-can.readthedocs.io/).
+Write your code once against one API and run it on Kvaser, PEAK PCAN or an
+in-process virtual bus.
 
 ```rust
-use canlib::{Bitrate, CanMessage, Channel, OpenFlags, StandardId};
 use std::time::Duration;
+use canbus::{Bus, BusConfig, CanBus, CanMessage, StandardId};
 
-fn main() -> canlib::Result<()> {
-    let mut ch = Channel::open(0, OpenFlags::ACCEPT_VIRTUAL)?;
-    ch.set_bitrate(Bitrate::Rate500K)?;
-    ch.bus_on()?;
+fn main() -> canbus::Result<()> {
+    // Or "pcan" / "PCAN_USBBUS1", or "virtual" / "vcan0" — same code.
+    let mut bus = Bus::open(&BusConfig::new("kvaser", "0").bitrate(500_000))?;
 
-    // Send — pass a StandardId or ExtendedId to choose the format
     let id = StandardId::new(0x123).unwrap();
-    let msg = CanMessage::new(id, &[0xDE, 0xAD, 0xBE, 0xEF])?;
-    ch.write(&msg)?;
+    bus.send(&CanMessage::new(id, &[0xDE, 0xAD, 0xBE, 0xEF])?, None)?;
 
-    // Receive (2s timeout)
-    match ch.read_wait(Duration::from_secs(2)) {
-        Ok(rx) => println!("id=0x{:X} data={:02X?}", rx.id(), rx.data()),
-        Err(canlib::CanError::Timeout) => println!("No message"),
-        Err(e) => return Err(e),
+    if let Some(rx) = bus.recv(Some(Duration::from_secs(1)))? {
+        println!("id=0x{:X} data={:02X?}", rx.id(), rx.data());
     }
-
     Ok(())
-    // Channel goes off-bus and closes on drop
 }
 ```
 
-## CAN FD
+## Features
 
-```rust
-use canlib::{Bitrate, Brs, CanMessage, Channel, DriverType, FdBitrate, OpenFlags, StandardId};
+- **One API for every adapter** — `Bus` / `CanBus`: send, receive with
+  timeout, filters, bus status, CAN FD.
+- **Runtime backend selection** — by name, from the command line, or from the
+  same `CAN_INTERFACE` / `CAN_CHANNEL` / `CAN_BITRATE` environment variables
+  python-can uses (`Bus::from_env()`).
+- **No build-time vendor dependencies** — vendor libraries are loaded when a
+  bus is opened, so the crate builds everywhere and missing drivers are a
+  clear runtime error.
+- **Virtual bus** for tests and CI on any OS, no hardware needed.
+- **Thread-friendly** — every bus is `Send`; move it to a worker thread.
+- **Software filtering fallback** — filters behave the same on every backend,
+  even when the hardware can only approximate them.
+- **`embedded-can`** — `Bus` implements `embedded_can::blocking::Can` and
+  `embedded_can::nb::Can`.
+- **Extensible** — third-party backends implement `canbus_core::CanBus` and
+  plug in with `Bus::open_with`.
 
-let flags = OpenFlags::CAN_FD | OpenFlags::ACCEPT_VIRTUAL | OpenFlags::REQUIRE_INIT_ACCESS;
-let mut ch = Channel::open(0, flags)?;
+## Interfaces
 
-ch.set_bitrate(Bitrate::Rate500K)?;          // Arbitration phase
-ch.set_fd_bitrate(FdBitrate::Rate2M80P)?;    // Data phase
-ch.set_output_control(DriverType::Normal)?;
-ch.bus_on()?;
+| Interface | Channel names | Platforms | Requires |
+|---|---|---|---|
+| `kvaser` | `0`, `1`, … (CANlib channel index) | Windows, Linux | [Kvaser drivers / CANlib SDK](https://kvaser.com/developer/canlib-sdk/) (Linux: [linuxcan](https://www.kvaser.com/linux-drivers-and-sdk-2/)) |
+| `pcan` | `PCAN_USBBUS1`, `PCAN_PCIBUS1`, `PCAN_LANBUS1`, … | Windows, Linux | [PEAK PCAN-Basic](https://www.peak-system.com/PCAN-Basic.239.0.html) |
+| `virtual` | any name, e.g. `vcan0` | all | nothing |
 
-// 64 bytes, BRS enabled, standard ID
-let id = StandardId::new(0x456).unwrap();
-let msg = CanMessage::new_fd(id, &[0u8; 64], Brs::On)?;
-ch.write(&msg)?;
+All three are enabled by default (Cargo features `kvaser`, `pcan`,
+`virtual`). If a vendor library is installed somewhere non-standard, set
+`CANLIB_SDK_DIR` (Kvaser) or `PCAN_SDK_DIR` (PEAK).
+
+## Install
+
+```toml
+[dependencies]
+canbus = "0.1"
 ```
+
+To trim backends: `canbus = { version = "0.1", default-features = false, features = ["pcan"] }`.
 
 ## Examples
 
 ```sh
-cargo run --example list_channels       # List available CAN channels
-cargo run --example send_receive        # Send/receive on channel 0
-cargo run --example canfd               # Send a CAN FD message
-cargo run --example virtual_loopback    # Full test using virtual channels (no hardware)
-cargo run --example can_fd_channel_setup # CAN FD setup walkthrough
+cargo run -p canbus --example list_channels                  # every interface and channel found
+cargo run -p canbus --example virtual_loopback               # runs anywhere, no hardware
+cargo run -p canbus --example send_receive -- kvaser 0 500000
+cargo run -p canbus --example canfd -- pcan PCAN_USBBUS1
+CAN_INTERFACE=pcan CAN_CHANNEL=PCAN_USBBUS1 CAN_BITRATE=500000 \
+    cargo run -p canbus --example send_receive
 ```
+
+Hardware smoke tests (ignored by default):
+`cargo test -p canbus --test hardware -- --ignored`.
+
+## Crates
+
+| Crate | Purpose |
+|---|---|
+| [`canbus`](crates/canbus) | What applications depend on: `Bus`, runtime backend selection, env config |
+| [`canbus-core`](crates/canbus-core) | The stable contract: `CanMessage`, `BusConfig`, `CanBus`, `Interface`, `Error` |
+| [`canbus-kvaser`](crates/canbus-kvaser) | Kvaser CANlib backend |
+| [`canbus-pcan`](crates/canbus-pcan) | PEAK PCAN-Basic backend |
+| [`canbus-virtual`](crates/canbus-virtual) | In-process virtual bus |
+
+See [USER_GUIDE.md](USER_GUIDE.md) for the full guide and
+[ARCHITECTURE.md](ARCHITECTURE.md) for how the pieces fit together.
 
 ## Troubleshooting
 
-**"Failed to load canlib32.dll"** — The SDK is not installed or the DLL is not on the system PATH. Install the SDK, or set `CANLIB_SDK_DIR` to point to the SDK root directory.
-
-**"No channels available"** — No Kvaser hardware connected and the Virtual CAN driver is not installed. Install the Kvaser Virtual CAN driver (included with the SDK on Windows).
-
-## Architecture
-
-The project is a Cargo workspace with two crates:
-
-- **`canlib-sys`** — Low-level FFI layer. Loads `canlib32.dll`/`libcanlib.so` at runtime via `libloading`. Contains all type definitions, constants, and function pointer signatures.
-- **`canlib`** — Safe wrapper. Provides `Channel`, `CanMessage`, error handling, and RAII resource management.
-
-See [ARCHITECTURE.md](ARCHITECTURE.md) for details. Full API documentation is in [USER_GUIDE.md](USER_GUIDE.md).
+- **`vendor library could not be loaded`** — the vendor driver/SDK isn't
+  installed, or its library isn't on the search path. Install it, or set
+  `CANLIB_SDK_DIR` / `PCAN_SDK_DIR`. On macOS only `virtual` is available.
+- **No Kvaser channels** — no hardware connected and the Kvaser virtual
+  driver isn't installed (it ships with the Windows driver package).
+- **`invalid configuration: no … preset for bitrate`** — the backend has no
+  preset for that rate; pass explicit timing with `BusConfig::timing` /
+  `BusConfig::fd_timing`.
 
 ## License
 

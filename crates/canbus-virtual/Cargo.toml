@@ -1,0 +1,10 @@
+[package]
+name = "canbus-virtual"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "In-process virtual CAN bus for the canbus crate family"
+
+[dependencies]
+canbus-core.workspace = true

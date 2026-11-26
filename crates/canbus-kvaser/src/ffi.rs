@@ -151,6 +151,13 @@ pub const canSTAT_TX_PENDING: ::std::os::raw::c_ulong = 0x00000010;
 pub const canSTAT_RX_PENDING: ::std::os::raw::c_ulong = 0x00000020;
 pub const canSTAT_OVERRUN: ::std::os::raw::c_ulong = 0x00000080;
 
+// ---- canIoCtl function codes ----
+
+/// Set the time-stamp clock resolution, in microseconds (default 1000).
+pub const canIOCTL_SET_TIMER_SCALE: ::std::os::raw::c_uint = 6;
+/// Get the time-stamp clock resolution, in microseconds.
+pub const canIOCTL_GET_TIMER_SCALE: ::std::os::raw::c_uint = 12;
+
 // ---- Structs ----
 
 #[repr(C)]
@@ -380,6 +387,13 @@ pub struct CanLib {
 
     pub canFlushReceiveQueue: unsafe extern "system" fn(hnd: canHandle) -> canStatus,
     pub canFlushTransmitQueue: unsafe extern "system" fn(hnd: canHandle) -> canStatus,
+
+    pub canIoCtl: unsafe extern "system" fn(
+        hnd: canHandle,
+        func: ::std::os::raw::c_uint,
+        buf: *mut ::std::os::raw::c_void,
+        buflen: ::std::os::raw::c_uint,
+    ) -> canStatus,
 }
 
 // SAFETY: The CANLib shared library functions are thread-safe per Kvaser documentation.
@@ -512,6 +526,7 @@ impl CanLib {
             canGetBusStatistics: load_sym!(lib, "canGetBusStatistics"),
             canFlushReceiveQueue: load_sym!(lib, "canFlushReceiveQueue"),
             canFlushTransmitQueue: load_sym!(lib, "canFlushTransmitQueue"),
+            canIoCtl: load_sym!(lib, "canIoCtl"),
             _lib: lib,
         })
     }

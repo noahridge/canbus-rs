@@ -1,9 +1,12 @@
 # Plan: Optional Bindgen for SDK Header Validation
 
+> **Layout note:** the Kvaser bindings now live in the private `ffi` module of
+> `crates/canbus-kvaser` (there is no separate `canlib-sys` crate any more).
+> Paths below have been updated accordingly.
 ## Problem
 
 With runtime dynamic loading, all FFI types, constants, and function signatures
-are defined manually in `canlib-sys/src/lib.rs`. If Kvaser updates their SDK and
+are defined manually in `crates/canbus-kvaser/src/ffi.rs`. If Kvaser updates their SDK and
 changes a function signature, struct layout, or constant value, the manual
 declarations silently become wrong — leading to memory corruption, undefined
 behavior, or subtle runtime bugs with no compile-time warning.
@@ -18,7 +21,7 @@ normal builds.
 
 ### 1. Add `bindgen` as an optional build dependency
 
-In `canlib-sys/Cargo.toml`:
+In `crates/canbus-kvaser/Cargo.toml`:
 
 ```toml
 [features]
@@ -46,7 +49,7 @@ When disabled:
 
 ### 4. Add a compile-time validation test
 
-Create `canlib-sys/tests/validate_bindings.rs` (only compiled with the feature):
+Create a unit-test module in `crates/canbus-kvaser/src/` (integration tests in `tests/` cannot see the private `ffi` module), compiled only with the feature:
 
 ```rust
 #[cfg(feature = "validate-bindings")]
@@ -86,7 +89,7 @@ Add a CI step that runs on a machine with the Kvaser SDK and LLVM installed:
 
 ```yaml
 - name: Validate FFI bindings against SDK headers
-  run: cargo test --features validate-bindings -p canlib-sys
+  run: cargo test --features validate-bindings -p canbus-kvaser
 ```
 
 This catches SDK drift automatically without affecting normal builds.
