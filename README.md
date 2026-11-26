@@ -47,8 +47,12 @@ fn main() -> canbus::Result<()> {
 | Interface | Channel names | Platforms | Requires |
 |---|---|---|---|
 | `kvaser` | `0`, `1`, … (CANlib channel index) | Windows, Linux | [Kvaser drivers / CANlib SDK](https://kvaser.com/developer/canlib-sdk/) (Linux: [linuxcan](https://www.kvaser.com/linux-drivers-and-sdk-2/)) |
-| `pcan` | `PCAN_USBBUS1`, `PCAN_PCIBUS1`, `PCAN_LANBUS1`, … | Windows, Linux | [PEAK PCAN-Basic](https://www.peak-system.com/PCAN-Basic.239.0.html) |
+| `pcan` ⚠️ | `PCAN_USBBUS1`, `PCAN_PCIBUS1`, `PCAN_LANBUS1`, … | Windows, Linux | [PEAK PCAN-Basic](https://www.peak-system.com/PCAN-Basic.239.0.html) |
 | `virtual` | any name, e.g. `vcan0` | all | nothing |
+
+⚠️ The `pcan` backend has not yet been tested on PEAK hardware. If you use
+it, please report results either way in
+[#26](https://github.com/noahridge/canbus-rs/issues/26).
 
 All three are enabled by default (Cargo features `kvaser`, `pcan`,
 `virtual`). If a vendor library is installed somewhere non-standard, set

@@ -4,6 +4,9 @@
 //! Applications normally use this through `canbus::Bus` with interface name
 //! `"pcan"`; depend on this crate directly only to skip the facade.
 //!
+//! **Not yet tested on PEAK hardware.** Please report results, passing or
+//! failing, in [#26](https://github.com/noahridge/canbus-rs/issues/26).
+//!
 //! PCAN-Basic (`PCANBasic.dll` on Windows, `libpcanbasic.so` on Linux) is
 //! loaded at runtime the first time a bus is opened. Set `PCAN_SDK_DIR` to
 //! load it from a non-standard location. On platforms PEAK doesn't support,

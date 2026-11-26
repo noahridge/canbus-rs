@@ -7,7 +7,7 @@ workspace share one version.
 
 ## [Unreleased]
 
-## [0.1.0] - Unreleased
+## [0.1.0] - 2026-11-26
 
 First release of the `canbus` crate family.
 
@@ -43,6 +43,14 @@ First release of the `canbus` crate family.
 - PCAN "channel in use" was reported as "invalid handle".
 - The crates no longer fail to compile on platforms without vendor
   libraries (e.g. macOS); opening a bus reports `LibraryNotLoaded` instead.
+
+### Known limitations
+
+- The `pcan` backend has not been tested on PEAK hardware yet; its pure
+  logic is unit-tested. Tracked in
+  [#26](https://github.com/noahridge/canbus-rs/issues/26). The `kvaser`
+  backend was validated on Windows with Kvaser's virtual channels (classic
+  CAN, CAN FD, and a bus used from another thread).
 
 [Unreleased]: https://github.com/noahridge/canbus-rs/compare/v0.1.0...HEAD
 [0.1.0]: https://github.com/noahridge/canbus-rs/releases/tag/v0.1.0
