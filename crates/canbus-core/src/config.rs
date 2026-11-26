@@ -36,11 +36,7 @@ impl Timing {
     /// The bitrate this timing produces, in bit/s (0 if `brp` is 0).
     pub fn bitrate(&self) -> u32 {
         let divisor = self.brp.saturating_mul(self.quanta_per_bit());
-        if divisor == 0 {
-            0
-        } else {
-            self.clock_hz / divisor
-        }
+        self.clock_hz.checked_div(divisor).unwrap_or(0)
     }
 
     /// Sample point as a fraction of the bit time (e.g. `0.8`).
