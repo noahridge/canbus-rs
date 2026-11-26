@@ -1,0 +1,15 @@
+[package]
+name = "canbus-virtual"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "In-process virtual CAN bus for the canbus crate family"
+documentation = "https://docs.rs/canbus-virtual"
+readme = "README.md"
+keywords = ["can", "canbus", "virtual", "testing", "automotive"]
+categories = ["hardware-support", "development-tools::testing"]
+
+[dependencies]
+canbus-core.workspace = true
