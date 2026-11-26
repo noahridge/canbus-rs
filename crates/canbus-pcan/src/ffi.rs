@@ -395,9 +395,7 @@ macro_rules! load_sym {
         // The symbol type is inferred from the struct field it initialises, so
         // the declared signature is the single source of truth.
         // SAFETY: the field signatures mirror the PCAN-Basic headers.
-        *$lib
-            .get($name.as_bytes())
-            .map_err(|e| LoadError::SymbolNotFound($name, e))?
+        *unsafe { $lib.get($name.as_bytes()) }.map_err(|e| LoadError::SymbolNotFound($name, e))?
     }};
 }
 
@@ -409,6 +407,9 @@ impl PcanLib {
     /// The loaded library must be a genuine PCAN-Basic implementation
     /// with the expected ABI.
     pub unsafe fn load() -> Result<Self, LoadError> {
+        // SAFETY: loading runs the library's initialisers; `load`'s caller
+        // vouches that it is the genuine vendor library.
+        let open = |path: &std::ffi::OsStr| unsafe { libloading::Library::new(path) };
         let lib = if let Ok(dir) = std::env::var("PCAN_SDK_DIR") {
             let mut path = std::path::PathBuf::from(&dir);
             if cfg!(target_os = "windows") && cfg!(target_pointer_width = "64") {
@@ -417,11 +418,11 @@ impl PcanLib {
                 path.push("x86");
             }
             path.push(LIB_NAME);
-            libloading::Library::new(&path)
-                .or_else(|_| libloading::Library::new(LIB_NAME))
+            open(path.as_os_str())
+                .or_else(|_| open(LIB_NAME.as_ref()))
                 .map_err(LoadError::LibraryNotFound)?
         } else {
-            libloading::Library::new(LIB_NAME).map_err(LoadError::LibraryNotFound)?
+            open(LIB_NAME.as_ref()).map_err(LoadError::LibraryNotFound)?
         };
 
         Ok(Self {

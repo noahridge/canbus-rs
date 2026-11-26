@@ -4,8 +4,8 @@ use std::os::raw::c_char;
 
 use canbus_core::{BusConfig, BusState, Error, MessageFlags, Result, Timing};
 
-use crate::ffi as sys;
 use crate::NAME;
+use crate::ffi as sys;
 
 /// Get the loaded PCAN-Basic, or [`Error::LibraryNotLoaded`].
 pub(crate) fn lib() -> Result<&'static sys::PcanLib> {
@@ -38,7 +38,7 @@ pub(crate) fn error_from_status(lib: &sys::PcanLib, status: sys::TPCANStatus) ->
     match status & HANDLE_ERROR_FIELD {
         sys::PCAN_ERROR_HWINUSE | sys::PCAN_ERROR_NETINUSE => return Error::ChannelInUse,
         sys::PCAN_ERROR_ILLHW | sys::PCAN_ERROR_ILLNET | sys::PCAN_ERROR_ILLCLIENT => {
-            return Error::ChannelNotFound
+            return Error::ChannelNotFound;
         }
         _ => {}
     }
@@ -330,8 +330,10 @@ mod tests {
         assert!(
             !read_flags(sys::PCAN_MESSAGE_STATUS, &bus_off).contains(MessageFlags::ERR_HW_OVERRUN)
         );
-        assert!(!read_flags(sys::PCAN_MESSAGE_STANDARD, &[1, 2, 3, 4])
-            .contains(MessageFlags::ERROR_FRAME));
+        assert!(
+            !read_flags(sys::PCAN_MESSAGE_STANDARD, &[1, 2, 3, 4])
+                .contains(MessageFlags::ERROR_FRAME)
+        );
     }
 
     #[test]
@@ -414,10 +416,12 @@ mod tests {
                 tseg2: *tseg2,
                 sjw: *sjw,
             };
-            assert!(FD_NOMINAL
-                .iter()
-                .chain(FD_DATA.iter())
-                .any(|r| r.0 == t.bitrate()));
+            assert!(
+                FD_NOMINAL
+                    .iter()
+                    .chain(FD_DATA.iter())
+                    .any(|r| r.0 == t.bitrate())
+            );
         }
         assert!(
             fd_bitrate_string(&BusConfig::new(NAME, "x").bitrate(500_000).fd(3_000_000)).is_err()

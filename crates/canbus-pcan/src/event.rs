@@ -72,7 +72,7 @@ mod windows_impl {
     const WAIT_TIMEOUT: u32 = 0x102;
 
     #[link(name = "kernel32")]
-    extern "system" {
+    unsafe extern "system" {
         fn WaitForSingleObject(handle: EventHandle, milliseconds: u32) -> u32;
         fn CreateEventA(
             attributes: *mut std::os::raw::c_void,
@@ -158,7 +158,7 @@ mod linux_impl {
 
     const POLLIN: std::os::raw::c_short = 0x0001;
 
-    extern "C" {
+    unsafe extern "C" {
         fn poll(
             fds: *mut PollFd,
             nfds: std::os::raw::c_ulong,

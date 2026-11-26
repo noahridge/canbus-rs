@@ -38,7 +38,7 @@ mod ffi;
 
 use canbus_core::{BusConfig, CanBus, Interface, Result};
 
-pub use bus::{detect, KvaserBus};
+pub use bus::{KvaserBus, detect};
 
 pub(crate) const NAME: &str = "kvaser";
 

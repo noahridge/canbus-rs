@@ -35,7 +35,7 @@ mod ffi;
 
 use canbus_core::{BusConfig, CanBus, Interface, Result};
 
-pub use bus::{detect, PcanBus};
+pub use bus::{PcanBus, detect};
 
 pub(crate) const NAME: &str = "pcan";
 

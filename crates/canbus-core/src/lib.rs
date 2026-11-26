@@ -48,18 +48,18 @@ pub use embedded_can;
 pub use nb;
 
 pub use bus::{BusState, BusStatus, CanBus, Capabilities, Deadline, ErrorCounters};
-pub use config::{parse_bool, BusConfig, FdConfig, Timing};
+pub use config::{BusConfig, FdConfig, Timing, parse_bool};
 pub use embedded::{
-    blocking_receive, blocking_transmit, decode_error_frame, nb_receive, nb_transmit, BusError,
-    EmbeddedCan, EmbeddedCanError,
+    BusError, EmbeddedCan, EmbeddedCanError, blocking_receive, blocking_transmit,
+    decode_error_frame, nb_receive, nb_transmit,
 };
 pub use embedded_can::ErrorKind as BusErrorKind;
 pub use embedded_can::{ExtendedId, Id, StandardId};
 pub use error::{Error, Result};
 pub use filter::{Filter, FilterSupport};
 pub use frame::{
-    dlc_to_len, fd_len_round_up, id_to_raw_and_flag, len_to_dlc, Brs, CanMessage, DataFrame,
-    ErrorFrame, MessageFlags, RemoteFrame, CANFD_MAX_LEN, CAN_EXT_ID_MAX, CAN_MAX_LEN,
-    CAN_STD_ID_MAX,
+    Brs, CAN_EXT_ID_MAX, CAN_MAX_LEN, CAN_STD_ID_MAX, CANFD_MAX_LEN, CanMessage, DataFrame,
+    ErrorFrame, MessageFlags, RemoteFrame, dlc_to_len, fd_len_round_up, id_to_raw_and_flag,
+    len_to_dlc,
 };
 pub use interface::{ChannelInfo, DetectFn, Interface, OpenFn};

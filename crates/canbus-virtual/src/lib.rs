@@ -301,15 +301,19 @@ mod tests {
     #[test]
     fn shutdown_unregisters_and_rejects_io() {
         let mut a = VirtualBus::open(&BusConfig::new("virtual", "unit-shutdown")).unwrap();
-        assert!(detect()
-            .unwrap()
-            .iter()
-            .any(|c| c.channel == "unit-shutdown"));
+        assert!(
+            detect()
+                .unwrap()
+                .iter()
+                .any(|c| c.channel == "unit-shutdown")
+        );
         a.shutdown().unwrap();
-        assert!(!detect()
-            .unwrap()
-            .iter()
-            .any(|c| c.channel == "unit-shutdown"));
+        assert!(
+            !detect()
+                .unwrap()
+                .iter()
+                .any(|c| c.channel == "unit-shutdown")
+        );
         assert_eq!(a.send(&frame(1, &[]), None), Err(Error::Shutdown));
         assert_eq!(a.recv(Some(Duration::ZERO)), Err(Error::Shutdown));
     }

@@ -7,18 +7,18 @@ use std::os::raw::{c_char, c_void};
 use std::time::Duration;
 
 use canbus_core::{
-    dlc_to_len, len_to_dlc, BusConfig, BusStatus, CanBus, CanMessage, Capabilities, ChannelInfo,
-    Deadline, Error, Filter, FilterSupport, Result, CANFD_MAX_LEN, CAN_MAX_LEN,
+    BusConfig, BusStatus, CAN_MAX_LEN, CANFD_MAX_LEN, CanBus, CanMessage, Capabilities,
+    ChannelInfo, Deadline, Error, Filter, FilterSupport, Result, dlc_to_len, len_to_dlc,
 };
 
+use crate::NAME;
 use crate::channel_name;
 use crate::convert::{
     bus_state_from_pcan, c_buf_to_string, check, classic_btr, fd_bitrate_string, flags_to_pcan,
     is_ok, lib, read_flags,
 };
-use crate::event::{self, wait_for_event, EventHandle, WaitOutcome};
+use crate::event::{self, EventHandle, WaitOutcome, wait_for_event};
 use crate::ffi as sys;
-use crate::NAME;
 
 /// An open PCAN channel.
 ///
@@ -212,7 +212,7 @@ impl CanBus for PcanBus {
         loop {
             match check(lib, self.write_once(lib, msg)) {
                 Err(Error::TxQueueFull) if timeout == Some(Duration::ZERO) => {
-                    return Err(Error::TxQueueFull)
+                    return Err(Error::TxQueueFull);
                 }
                 Err(Error::TxQueueFull) if deadline.expired() => return Err(Error::Timeout),
                 Err(Error::TxQueueFull) => std::thread::sleep(Duration::from_millis(1)),
@@ -260,11 +260,13 @@ impl CanBus for PcanBus {
                 return Ok(FilterSupport::Hardware);
             }
             [Filter::Range { from, to, extended }] => Some((*from, *to, *extended)),
-            [Filter::CodeMask {
-                code,
-                mask,
-                extended,
-            }] => codemask_to_range(*code, *mask, *extended).map(|(f, t)| (f, t, *extended)),
+            [
+                Filter::CodeMask {
+                    code,
+                    mask,
+                    extended,
+                },
+            ] => codemask_to_range(*code, *mask, *extended).map(|(f, t)| (f, t, *extended)),
             _ => None,
         };
         match range {

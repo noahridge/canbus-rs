@@ -1,6 +1,6 @@
 //! Receive filters.
 
-use crate::frame::{CanMessage, CAN_EXT_ID_MAX, CAN_STD_ID_MAX};
+use crate::frame::{CAN_EXT_ID_MAX, CAN_STD_ID_MAX, CanMessage};
 
 /// A receive filter. A bus with several filters accepts a frame if **any**
 /// filter matches; an empty filter list accepts everything.

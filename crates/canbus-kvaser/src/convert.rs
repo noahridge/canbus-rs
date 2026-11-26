@@ -5,8 +5,8 @@ use std::time::Duration;
 
 use canbus_core::{BusState, Error, MessageFlags, Result};
 
-use crate::ffi as sys;
 use crate::NAME;
+use crate::ffi as sys;
 
 /// Get the loaded CANlib, or [`Error::LibraryNotLoaded`].
 pub(crate) fn lib() -> Result<&'static sys::CanLib> {

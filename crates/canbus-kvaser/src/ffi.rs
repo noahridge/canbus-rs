@@ -451,9 +451,7 @@ macro_rules! load_sym {
         // The symbol type is inferred from the struct field it initialises, so
         // the declared signature is the single source of truth.
         // SAFETY: the field signatures mirror the Kvaser CANLib SDK headers.
-        *$lib
-            .get($name.as_bytes())
-            .map_err(|e| LoadError::SymbolNotFound($name, e))?
+        *unsafe { $lib.get($name.as_bytes()) }.map_err(|e| LoadError::SymbolNotFound($name, e))?
     }};
 }
 
@@ -465,6 +463,9 @@ impl CanLib {
     /// The loaded library must be a genuine Kvaser CANLib implementation with
     /// the expected ABI. This is satisfied by the official SDK installation.
     pub unsafe fn load() -> Result<Self, LoadError> {
+        // SAFETY: loading runs the library's initialisers; `load`'s caller
+        // vouches that it is the genuine vendor library.
+        let open = |path: &std::ffi::OsStr| unsafe { libloading::Library::new(path) };
         // If CANLIB_SDK_DIR is set, try loading from that directory first.
         let lib = if let Ok(dir) = std::env::var("CANLIB_SDK_DIR") {
             let mut path = std::path::PathBuf::from(&dir);
@@ -479,11 +480,11 @@ impl CanLib {
                 path.push("lib");
             }
             path.push(LIB_NAME);
-            libloading::Library::new(&path)
-                .or_else(|_| libloading::Library::new(LIB_NAME))
+            open(path.as_os_str())
+                .or_else(|_| open(LIB_NAME.as_ref()))
                 .map_err(LoadError::LibraryNotFound)?
         } else {
-            libloading::Library::new(LIB_NAME).map_err(LoadError::LibraryNotFound)?
+            open(LIB_NAME.as_ref()).map_err(LoadError::LibraryNotFound)?
         };
 
         Ok(Self {

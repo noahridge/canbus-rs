@@ -4,9 +4,9 @@ use core::fmt;
 use core::time::Duration;
 
 use canbus_core::{
-    blocking_receive, blocking_transmit, nb_receive, nb_transmit, BusConfig, BusStatus, CanBus,
-    CanMessage, Capabilities, Deadline, EmbeddedCanError, Error, Filter, FilterSupport, Interface,
-    Result,
+    BusConfig, BusStatus, CanBus, CanMessage, Capabilities, Deadline, EmbeddedCanError, Error,
+    Filter, FilterSupport, Interface, Result, blocking_receive, blocking_transmit, nb_receive,
+    nb_transmit,
 };
 
 /// An open CAN bus on any backend.

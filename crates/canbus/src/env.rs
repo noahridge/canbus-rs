@@ -1,6 +1,6 @@
 //! Bus configuration from environment variables.
 
-use canbus_core::{parse_bool, BusConfig, Error, Result};
+use canbus_core::{BusConfig, Error, Result, parse_bool};
 
 /// Build a [`BusConfig`] from `CAN_*` environment variables.
 ///
@@ -55,12 +55,12 @@ pub fn config_from_lookup(get: impl Fn(&str) -> Option<String>) -> Result<BusCon
         (Some(false), Some(_)) => {
             return Err(Error::InvalidConfig(
                 "CAN_DATA_BITRATE is set but CAN_FD is false".into(),
-            ))
+            ));
         }
         (Some(true), None) => {
             return Err(Error::InvalidConfig(
                 "CAN_FD is true but CAN_DATA_BITRATE is not set".into(),
-            ))
+            ));
         }
         (_, Some(data_bitrate)) => config = config.fd(data_bitrate),
         (_, None) => {}

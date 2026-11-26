@@ -7,16 +7,16 @@ use std::sync::Once;
 use std::time::Duration;
 
 use canbus_core::{
-    BusConfig, BusStatus, CanBus, CanMessage, Capabilities, ChannelInfo, Deadline, Error,
-    ErrorCounters, Filter, FilterSupport, MessageFlags, Result, CANFD_MAX_LEN, CAN_MAX_LEN,
+    BusConfig, BusStatus, CAN_MAX_LEN, CANFD_MAX_LEN, CanBus, CanMessage, Capabilities,
+    ChannelInfo, Deadline, Error, ErrorCounters, Filter, FilterSupport, MessageFlags, Result,
 };
 
+use crate::NAME;
 use crate::convert::{
     bus_state_from_canlib, c_buf_to_string, check, classic_preset, error_from_status,
     fd_data_preset, flags_from_canlib, flags_to_canlib, lib, range_to_code_mask, timeout_ms,
 };
 use crate::ffi as sys;
-use crate::NAME;
 
 /// Timestamp resolution requested from the driver, in microseconds.
 const WANTED_TIMER_SCALE_US: u32 = 10;
@@ -240,7 +240,7 @@ impl CanBus for KvaserBus {
             };
             match status {
                 sys::canERR_TXBUFOFL if timeout == Some(Duration::ZERO) => {
-                    return Err(Error::TxQueueFull)
+                    return Err(Error::TxQueueFull);
                 }
                 sys::canERR_TXBUFOFL if deadline.expired() => return Err(Error::Timeout),
                 sys::canERR_TXBUFOFL => std::thread::sleep(Duration::from_millis(1)),
@@ -316,11 +316,13 @@ impl CanBus for KvaserBus {
         self.set_accept_all(lib)?;
         let hw = match filters {
             [] => return Ok(FilterSupport::Hardware),
-            [Filter::CodeMask {
-                code,
-                mask,
-                extended,
-            }] => Some((*code, *mask, *extended)),
+            [
+                Filter::CodeMask {
+                    code,
+                    mask,
+                    extended,
+                },
+            ] => Some((*code, *mask, *extended)),
             [Filter::Range { from, to, extended }] => {
                 range_to_code_mask(*from, *to, *extended).map(|(c, m)| (c, m, *extended))
             }

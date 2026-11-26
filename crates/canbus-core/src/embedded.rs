@@ -16,7 +16,7 @@ use embedded_can::ErrorKind;
 
 use crate::bus::CanBus;
 use crate::error::Error;
-use crate::frame::{CanMessage, MessageFlags, CAN_MAX_LEN};
+use crate::frame::{CAN_MAX_LEN, CanMessage, MessageFlags};
 
 /// A CAN bus protocol error decoded from a received error frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

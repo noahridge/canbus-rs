@@ -24,6 +24,7 @@ First release of the `canbus` crate family.
 - `canbus-kvaser`: Kvaser CANlib backend (Windows, Linux), loaded at runtime.
 - `canbus-pcan`: PEAK PCAN-Basic backend (Windows, Linux), loaded at runtime.
 - `canbus-virtual`: in-process virtual bus for tests and CI on any OS.
+- Rust 2024 edition; minimum supported Rust version 1.85.
 
 ### Changed (relative to the unpublished `canlib` / `pcan` crates)
 

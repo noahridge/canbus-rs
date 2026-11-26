@@ -133,9 +133,11 @@ fn boxed_backend_and_third_party_open_paths() {
 #[test]
 fn detect_lists_open_virtual_channels() {
     let (_a, _b) = pair("it-detect");
-    assert!(canbus::detect_available()
-        .iter()
-        .any(|c| c.interface == "virtual" && c.channel == "it-detect"));
+    assert!(
+        canbus::detect_available()
+            .iter()
+            .any(|c| c.interface == "virtual" && c.channel == "it-detect")
+    );
 }
 
 #[test]
