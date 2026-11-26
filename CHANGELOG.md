@@ -7,6 +7,12 @@ workspace share one version.
 
 ## [Unreleased]
 
+### Changed
+
+- Minimum supported Rust version raised from 1.85 to 1.89, in preparation
+  for a SocketCAN backend built on the `socketcan` crate (4.0 requires 1.89;
+  see [#25](https://github.com/noahridge/canbus-rs/issues/25)).
+
 ## [0.1.0] - 2026-11-26
 
 First release of the `canbus` crate family.
