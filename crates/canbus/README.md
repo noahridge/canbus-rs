@@ -15,7 +15,7 @@ let reply = bus.recv(Some(Duration::from_secs(1)))?;
 ```
 
 Vendor libraries are loaded at runtime, so the crate builds on every
-platform. See the [repository](https://github.com/noahridge/canlib-rs) for
+platform. See the [repository](https://github.com/noahridge/canbus-rs) for
 the user guide, examples and the list of interfaces.
 
 License: MIT

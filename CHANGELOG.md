@@ -44,5 +44,5 @@ First release of the `canbus` crate family.
 - The crates no longer fail to compile on platforms without vendor
   libraries (e.g. macOS); opening a bus reports `LibraryNotLoaded` instead.
 
-[Unreleased]: https://github.com/noahridge/canlib-rs/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/noahridge/canlib-rs/releases/tag/v0.1.0
+[Unreleased]: https://github.com/noahridge/canbus-rs/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/noahridge/canbus-rs/releases/tag/v0.1.0
