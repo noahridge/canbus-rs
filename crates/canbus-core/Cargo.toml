@@ -4,7 +4,12 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+rust-version.workspace = true
 description = "Vendor-neutral CAN bus types and traits shared by the canbus backends"
+documentation = "https://docs.rs/canbus-core"
+readme = "README.md"
+keywords = ["can", "canbus", "can-fd", "embedded-can", "automotive"]
+categories = ["hardware-support", "embedded"]
 
 [dependencies]
 bitflags.workspace = true

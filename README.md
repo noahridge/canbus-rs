@@ -63,6 +63,8 @@ canbus = "0.1"
 
 To trim backends: `canbus = { version = "0.1", default-features = false, features = ["pcan"] }`.
 
+Minimum supported Rust version: **1.77**.
+
 ## Examples
 
 ```sh

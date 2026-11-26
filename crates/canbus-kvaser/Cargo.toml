@@ -4,7 +4,12 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+rust-version.workspace = true
 description = "Kvaser CANlib backend for the canbus crate family"
+documentation = "https://docs.rs/canbus-kvaser"
+readme = "README.md"
+keywords = ["can", "canbus", "kvaser", "canlib", "automotive"]
+categories = ["hardware-support", "api-bindings"]
 
 [dependencies]
 canbus-core.workspace = true

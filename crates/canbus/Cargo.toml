@@ -4,7 +4,12 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+rust-version.workspace = true
 description = "Cross-platform CAN bus library with runtime-selectable backends (Kvaser, PEAK PCAN, virtual)"
+documentation = "https://docs.rs/canbus"
+readme = "README.md"
+keywords = ["can", "canbus", "can-fd", "kvaser", "pcan"]
+categories = ["hardware-support"]
 
 [features]
 default = ["kvaser", "pcan", "virtual"]
@@ -23,3 +28,6 @@ nb.workspace = true
 [[example]]
 name = "virtual_loopback"
 required-features = ["virtual"]
+
+[package.metadata.docs.rs]
+all-features = true
