@@ -198,6 +198,11 @@ let reader = std::thread::spawn(move || {
 
 ### `pcan`
 
+> **Not yet tested on PEAK hardware.** The pure logic is unit-tested, but the
+> calls into PCAN-Basic haven't been run against a real adapter. Please report
+> results, passing or failing, in
+> [#26](https://github.com/noahridge/canbus-rs/issues/26).
+
 - **Channel:** `PCAN_USBBUS1`–`16`, `PCAN_PCIBUS1`–`16`, `PCAN_LANBUS1`–`16`,
   or a raw handle (`0x51`).
 - **Bitrate is required.** Classic presets: 1M, 800k, 500k, 250k, 125k, 100k,
